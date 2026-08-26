@@ -6,6 +6,7 @@
   "scripts": {
     "scan": "tsx src/scan-once.ts",
     "watch": "tsx src/watch.ts",
+    "mirror": "tsx src/mirror.ts",
     "resolve": "tsx src/track.ts"
   },
   "devDependencies": {

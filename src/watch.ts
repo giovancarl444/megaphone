@@ -7,16 +7,6 @@ const BASE = "https://frontend-api-v3.pump.fun/coins";
 const POLL_MS = 4_000; // 4s — matches the scanner; REST is unthrottled, no key
 const seen = new Set<string>();
 
-function fmt(r: ReturnType<typeof scoreCoin>): string {
-  const socials = r.socials.length ? r.socials.join("/") : "none";
-  return (
-    `📣 CALL — $${r.symbol}\n` +
-    `score ${r.score}/100 · $${Math.round(r.mcUsd)} mc · ${r.createdAgoSec}s old\n` +
-    `${r.reasons.filter((x) => !x.startsWith("FAIL")).join(" · ")}\n` +
-    `mint: ${r.mint}`
-  );
-}
-
 /** Push alert to founder chat. No agent loop needed. */
 async function alert(text: string) {
   try {
@@ -48,7 +38,18 @@ async function pollOnce(): Promise<void> {
       console.log(
         `${r.pass ? "✅" : "·"} ${c.symbol.padEnd(9)} s=${r.score} ${r.reasons.join(" | ")}`,
       );
-      if (r.pass) await alert(fmt(r));
+      if (!r.pass) continue;
+
+      const text =
+        `$${c.symbol} — early filter call\n` +
+        `score ${r.score}/100 · $${Math.round(r.mcUsd)} mc · ${r.createdAgoSec}s old\n` +
+        `${r.reasons.filter((x) => !x.startsWith("FAIL")).join(" · ")}`;
+      // 1) alert founder chat (single-line to survive shell quoting)
+      const oneline = `📣 CALL $${c.symbol} | ${r.score}/100 | $${Math.round(r.mcUsd)} mc | ${r.createdAgoSec}s | ${r.reasons.filter((x) => !x.startsWith("FAIL")).join(" ")} | mint:${c.mint}`;
+      await alert(oneline);
+      // 2) bundle into OUR pump.fun account (posts if PUMPFUN_TOKEN set)
+      const { postCallout } = await import("./callout");
+      await postCallout(c.mint, text);
     }
   } catch (e) {
     console.error("poll error:", (e as Error).message);

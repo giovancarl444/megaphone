@@ -20,9 +20,35 @@ export const CONFIG = {
   skipComplete: true,
   // --- score threshold to fire an alert ---
   alertThreshold: 65,
-  // --- quiet window so we don't re-alert the same mint ---
-  // (handled by watch.ts dedupe set)
 };
 
 /** FOUNDER chat for alerts (Solshotta). */
 export const FOUNDER_CHAT = "telegram:1915394365";
+
+/**
+ * WHALE CALLERS we mirror — the follower engine.
+ * When any of these wallets launches a coin, we score it through OUR filter
+ * and (if it passes) post the call on OUR account. Their calls, our curation.
+ *
+ * Addresses resolved from pump.fun public profiles (no auth):
+ *  - orangey/kingorange: 4P8apfoSyiwfgu4Gk3tx17igeP8s33ZfDTawfTEN3EQF
+ *  - cupsy:              3tL1nfq5tb9RfydszNwMytYAZrnD3gpkmxxcdTvpPS6S
+ * Add more by resolving their wallet via: GET /users/<handle>
+ */
+export const WHALES: { handle: string; address: string }[] = [
+  { handle: "orangey", address: "4P8apfoSyiwfgu4Gk3tx17igeP8s33ZfDTawfTEN3EQF" },
+  { handle: "cupsy", address: "3tL1nfq5tb9RfydszNwMytYAZrnD3gpkmxxcdTvpPS6S" },
+];
+
+/**
+ * pump.fun session JWT for OUR account. WITHOUT it, the engine logs intent
+ * but does not post (safe dry-run). Set via env PUMPFUN_TOKEN when you have
+ * a session. Posting a callout = the "bundle into our account" action.
+ */
+export const PUMPFUN_TOKEN = process.env.PUMPFUN_TOKEN ?? "";
+
+/** How far back to look for whale launches on each mirror poll (ms). */
+export const WHALE_LOOKBACK_MS = 6 * 60 * 60 * 1000; // 6h window
+
+/** Mirror poll cadence (ms). */
+export const WHALE_POLL_MS = 30_000; // 30s
