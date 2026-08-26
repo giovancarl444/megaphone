@@ -47,6 +47,18 @@ async function start() {
   await tick();
   setInterval(tick, 60_000);
 
+  // whale-mirror: pull proven winning calls from the leaderboard every 30 min
+  const mirrorTick = async () => {
+    try {
+      const { mirrorLeaderboard } = await import("./leaderboard-mirror");
+      await mirrorLeaderboard(50);
+    } catch (e) {
+      console.error("[supervisor] mirror error:", (e as Error).message);
+    }
+  };
+  setTimeout(mirrorTick, 30_000); // first pull shortly after start
+  setInterval(mirrorTick, 30 * 60_000);
+
   // heartbeat
   setInterval(() => {
     const t = new Date().toISOString();
