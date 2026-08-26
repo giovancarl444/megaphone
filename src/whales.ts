@@ -30,3 +30,16 @@ export async function fetchWhaleLaunches(
   }
   return out;
 }
+
+/** Fetch current state of a single coin by mint (used by the resolve loop). */
+export async function fetchCoinNow(mint: string): Promise<Coin | null> {
+  try {
+    const res = await fetch(`${BASE}/${mint}`, {
+      headers: { accept: "application/json" },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as Coin;
+  } catch {
+    return null;
+  }
+}

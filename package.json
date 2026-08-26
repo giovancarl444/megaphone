@@ -7,7 +7,9 @@
     "scan": "tsx src/scan-once.ts",
     "watch": "tsx src/watch.ts",
     "mirror": "tsx src/mirror.ts",
-    "resolve": "tsx src/track.ts"
+    "resolve": "tsx src/resolve-loop.ts",
+    "proof": "tsx src/resolve-loop.ts",
+    "daemon": "tsx src/daemon.ts"
   },
   "devDependencies": {
     "@types/node": "^20",

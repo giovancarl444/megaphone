@@ -30,6 +30,7 @@ export interface Callout {
   resolvedMcUsd?: number;
   multiple?: number; // resolvedMcUsd / calledMcUsd
   graduated?: boolean;
+  proofPosted?: boolean; // already broadcast as proof
   notes?: string;
 }
 
@@ -58,6 +59,18 @@ export async function logCallout(c: Omit<Callout, "calledAt"> & { calledAt?: num
   all.unshift(entry);
   await save(all.slice(0, 2000));
   return entry;
+}
+
+/** Update an existing callout entry in place (by mint). */
+export async function updateCallout(
+  mint: string,
+  patch: Partial<Callout>,
+): Promise<void> {
+  const all = await load();
+  const idx = all.findIndex((x) => x.mint === mint);
+  if (idx < 0) return;
+  all[idx] = { ...all[idx], ...patch };
+  await save(all);
 }
 
 /** Resolve a call's outcome (called later to build the track record). */

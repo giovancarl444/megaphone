@@ -47,7 +47,9 @@ export const WHALES: { handle: string; address: string }[] = [
  */
 export const PUMPFUN_TOKEN = process.env.PUMPFUN_TOKEN ?? "";
 
-/** How far back to look for whale launches on each mirror poll (ms). */
+/** Prove calls by posting the outcome. Set via env PROOF_CALL_REPLY_TOKEN. */
+export const PROOF_CHAT = "telegram:1915394365"; // same as founder for now
+export const PROOF_CALL_REPLY_TOKEN = process.env.PROOF_CALL_REPLY_TOKEN ?? "";
 export const WHALE_LOOKBACK_MS = 6 * 60 * 60 * 1000; // 6h window
 
 /** Mirror poll cadence (ms). */
