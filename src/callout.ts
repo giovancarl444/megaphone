@@ -6,16 +6,26 @@ import path from "node:path";
 const API = "https://frontend-api-v3.pump.fun";
 const DATA_DIR = () => process.env.MEGAPHONE_DATA_DIR ?? path.join(process.cwd(), ".megaphone");
 
+/** Optional residential proxy (env MEGAPHONE_PROXY) to pass Cloudflare writes. */
+function proxyArg(): string[] {
+  const p = process.env.MEGAPHONE_PROXY;
+  return p ? [`--proxy-server=${p}`] : [];
+}
+
 /**
- * Post a callout on a coin. pump.fun callouts are community-scoped:
+ * Post a callout on a coin. Callouts are community-scoped:
  *   POST /api/v1/communities/{mint}/callouts  { text }
  * Auth: Bearer JWT (minted via login.ts) + Cloudflare-cleared browser session.
  *
  * Posting goes THROUGH a real headless browser (Puppeteer) because pump.fun
  * sits behind Cloudflare, which blocks server-side fetch on write endpoints.
- * The browser solves CF and the request passes.
+ * The browser solves CF and the request passes — BUT only from a trusted IP
+ * (residential / your machine). On a datacenter IP, CF kills writes.
  *
- * Without a CF-cleared session + valid JWT, we dry-run (log intent only).
+ * Set MEGAPHONE_PROXY to a residential proxy (e.g. "http://user:pass@host:port")
+ * to route the browser through a trusted IP.
+ *
+ * Without a JWT, or if CF blocks the write, we dry-run (log intent only).
  */
 export async function postCallout(mint: string, text: string): Promise<boolean> {
   if (!PUMPFUN_TOKEN) {
@@ -24,11 +34,13 @@ export async function postCallout(mint: string, text: string): Promise<boolean> 
   }
   let browser;
   try {
-    browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", ...proxyArg()],
+    });
     const page = await browser.newPage();
-    // load a pump.fun page first so Cloudflare clears + cookies establish
     await page.goto("https://pump.fun", { waitUntil: "networkidle2", timeout: 60000 }).catch(() => {});
-    await new Promise((r) => setTimeout(r, 4000));
+    await new Promise((r) => setTimeout(r, 5000));
     const token = PUMPFUN_TOKEN;
     const result = await page.evaluate(
       async (api: string, mint: string, text: string, token: string) => {
