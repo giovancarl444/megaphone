@@ -8,18 +8,20 @@ export const CONFIG = {
   // --- REAL traction gate (the actual discriminator) ---
   // min real SOL deposited into the bonding curve by buyers.
   // a launch with no real buyers = noise/spam, never call it.
-  minRealSol: 1.5,
+  minRealSol: 2.5,
   // --- legitimacy gates ---
   // require >=2 socials for a call (x + web, or x + tg) — filters throwaways
   requireSocials: true,
   minSocials: 2,
+  // pump.fun traffic is X-native — a call without X is dead weight
+  requireX: true,
   // --- anti-spam ---
   skipBanned: true,
   skipNsfw: true,
   // --- bonding progress: ignore graduated/complete coins (no upside left) ---
   skipComplete: true,
   // --- score threshold to fire an alert ---
-  alertThreshold: 65,
+  alertThreshold: 75,
 };
 
 /** FOUNDER chat for alerts (Solshotta). */

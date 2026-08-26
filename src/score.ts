@@ -24,6 +24,9 @@ export function scoreCoin(coin: Coin, nowMs = Date.now()): ScoreResult {
   if (coin.twitter) socials.push("x");
   if (coin.telegram) socials.push("tg");
   if (coin.website) socials.push("web");
+  if (CONFIG.requireX && !socials.includes("x")) {
+    fail.push("no-x");
+  }
 
   // 1) early enough to be a real "call"
   if (ageSec <= 120) score += 22;
