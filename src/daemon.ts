@@ -12,11 +12,13 @@ const RESOLVE_EVERY_MS = 60_000; // sweep for resolutions + proofs every 60s
  */
 async function main() {
   console.log("MEGAPHONE daemon starting — firehose + resolve loop");
-  // start the firehose watcher as a long-lived process
+  // start the firehose watcher as a long-lived process (via tsx, not raw node)
   const { spawn } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const tsxBin = fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url));
   const watchProc = spawn(
     process.execPath,
-    [fileURLToPath(new URL("./watch.ts", import.meta.url))],
+    [tsxBin, fileURLToPath(new URL("./watch.ts", import.meta.url))],
     { stdio: "inherit", env: process.env },
   );
   watchProc.on("exit", (code) =>

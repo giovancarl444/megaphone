@@ -10,6 +10,7 @@
     "resolve": "tsx src/resolve-loop.ts",
     "proof": "tsx src/resolve-loop.ts",
     "login": "tsx src/login.ts",
+    "identity": "tsx src/login.ts --setup",
     "daemon": "tsx src/daemon.ts"
   },
   "devDependencies": {
