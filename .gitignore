@@ -1,0 +1,10 @@
+node_modules/
+.svee/
+*.log
+.watch*.log
+.king.json
+.s.json
+.chk.json
+.probe*.mjs
+.ws-test.mjs
+.tmp-test/
