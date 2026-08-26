@@ -47,7 +47,19 @@ export const WHALES: { handle: string; address: string }[] = [
  * but does not post (safe dry-run). Set via env PUMPFUN_TOKEN when you have
  * a session. Posting a callout = the "bundle into our account" action.
  */
-export const PUMPFUN_TOKEN = process.env.PUMPFUN_TOKEN ?? "";
+function loadToken(): string {
+  if (process.env.PUMPFUN_TOKEN) return process.env.PUMPFUN_TOKEN;
+  try {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const DATA_DIR = process.env.MEGAPHONE_DATA_DIR ?? path.join(process.cwd(), ".megaphone");
+    const raw = fs.readFileSync(path.join(DATA_DIR, "token.json"), "utf8");
+    return (JSON.parse(raw).token as string) ?? "";
+  } catch {
+    return "";
+  }
+}
+export const PUMPFUN_TOKEN = loadToken();
 
 /** Prove calls by posting the outcome. Set via env PROOF_CALL_REPLY_TOKEN. */
 export const PROOF_CHAT = "telegram:1915394365"; // same as founder for now

@@ -9,6 +9,7 @@
     "mirror": "tsx src/mirror.ts",
     "resolve": "tsx src/resolve-loop.ts",
     "proof": "tsx src/resolve-loop.ts",
+    "login": "tsx src/login.ts",
     "daemon": "tsx src/daemon.ts"
   },
   "devDependencies": {
@@ -17,5 +18,10 @@
     "tsx": "^4.19.0",
     "typescript": "^5",
     "ws": "^8"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4",
+    "bs58": "^6.0.0",
+    "tweetnacl": "^1.0.3"
   }
 }
