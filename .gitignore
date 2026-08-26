@@ -8,3 +8,6 @@ node_modules/
 .probe*.mjs
 .ws-test.mjs
 .tmp-test/
+
+# megaphone runtime
+.megaphone/

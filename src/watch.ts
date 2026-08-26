@@ -44,6 +44,20 @@ async function pollOnce(): Promise<void> {
         `$${c.symbol} — early filter call\n` +
         `score ${r.score}/100 · $${Math.round(r.mcUsd)} mc · ${r.createdAgoSec}s old\n` +
         `${r.reasons.filter((x) => !x.startsWith("FAIL")).join(" · ")}`;
+      // 0) log to shared callouts ledger (the proof engine reads this)
+      try {
+        const { logCallout } = await import("./leaderboard");
+        await logCallout({
+          mint: c.mint,
+          symbol: c.symbol,
+          name: c.name,
+          source: "firehose",
+          calledMcUsd: Math.round(r.mcUsd),
+          score: r.score,
+          reasons: r.reasons,
+          socials: r.socials,
+        });
+      } catch { /* non-fatal */ }
       // 1) alert founder chat (single-line to survive shell quoting)
       const oneline = `📣 CALL $${c.symbol} | ${r.score}/100 | $${Math.round(r.mcUsd)} mc | ${r.createdAgoSec}s | ${r.reasons.filter((x) => !x.startsWith("FAIL")).join(" ")} | mint:${c.mint}`;
       await alert(oneline);
