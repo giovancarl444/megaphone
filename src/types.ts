@@ -40,4 +40,5 @@ export interface ScoreResult {
   createdAgoSec: number;
   mcUsd: number;
   socials: string[];
+  realSol?: number; // bonding-curve SOL at score time (for learning)
 }

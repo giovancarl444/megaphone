@@ -71,6 +71,12 @@ export async function resolveLoop(): Promise<LoopResult> {
     `[resolve-loop] resolved=${resolved} proofs=${proofs} skipped=${skipped} | ` +
       `track: ${tr.resolved}/${tr.total} · win-rate ${(tr.winRate * 100).toFixed(0)}% · avg ${tr.avgMultiple.toFixed(2)}x · best ${tr.bestMultiple.toFixed(2)}x`,
   );
+
+  // periodic learning insight (feature deltas separate winners from losers)
+  if (tr.resolved >= 20) {
+    const { learnReport } = await import("./learn");
+    console.log("[learn]\n" + (await learnReport()));
+  }
   return { resolved, proofs, skipped };
 }
 

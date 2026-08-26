@@ -1,0 +1,60 @@
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import { promises as fs } from "node:fs";
+
+const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const LOG = path.join(ROOT, "..", ".daemon.out.log");
+const tsx = path.join(ROOT, "..", "node_modules", "tsx", "dist", "cli.mjs");
+const watch = path.join(ROOT, "watch.ts");
+
+/**
+ * Supervisor: keeps the firehose watcher alive forever.
+ * Restarts on crash, rotates the log so output never stalls,
+ * and surfaces a heartbeat so we know it's alive.
+ */
+async function start() {
+  let proc: any = null;
+  let restarts = 0;
+
+  const launch = () => {
+    proc = spawn(process.execPath, [tsx, watch], {
+      cwd: path.join(ROOT, ".."),
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+    const tag = `[${new Date().toISOString()}] `;
+    proc.stdout.on("data", (d: Buffer) => fs.appendFile(LOG, tag + d.toString()));
+    proc.stderr.on("data", (d: Buffer) => fs.appendFile(LOG, tag + "[err] " + d.toString()));
+    proc.on("exit", (code: number) => {
+      restarts++;
+      console.error(`[supervisor] watch exited ${code} (restart #${restarts}) — relaunching in 5s`);
+      setTimeout(launch, 5000);
+    });
+  };
+
+  launch();
+
+  // heartbeat + resolve-loop driver in the supervisor itself
+  const tick = async () => {
+    try {
+      const { resolveLoop } = await import("./resolve-loop");
+      await resolveLoop();
+    } catch (e) {
+      console.error("[supervisor] resolve-loop error:", (e as Error).message);
+    }
+  };
+  await tick();
+  setInterval(tick, 60_000);
+
+  // heartbeat
+  setInterval(() => {
+    const t = new Date().toISOString();
+    fs.appendFile(LOG, `[${t}] [heartbeat] alive, restarts=${restarts}\n`);
+  }, 300_000);
+}
+
+start().catch((e) => {
+  console.error("[supervisor] fatal", e);
+  process.exit(1);
+});

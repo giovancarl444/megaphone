@@ -2,7 +2,7 @@ import { CONFIG } from "./config";
 import type { Coin, ScoreResult } from "./types";
 
 /** Heuristic "is this coin worth a callout" scorer. Returns 0-100 + reasons. */
-export function scoreCoin(coin: Coin, nowMs = Date.now()): ScoreResult {
+export function scoreCoin(coin: Coin, nowMs = Date.now(), velSolPerMin = 0): ScoreResult {
   const reasons: string[] = [];
   let score = 0;
   const fail: string[] = [];
@@ -54,6 +54,14 @@ export function scoreCoin(coin: Coin, nowMs = Date.now()): ScoreResult {
   if (coin.verified) score += 6;
   if (coin.username) score += 3;
 
+  // 7) BUY MOMENTUM (SOL/min) — the strongest organic-interest signal.
+  //    Steady real buying (not a 1-block bot spike) = genuine attention.
+  //    Research: tokens with sustained diverse buying survive; bundled
+  //    bot launches die. Velocity captures the "real buyers piling in" pattern.
+  if (velSolPerMin >= 2) score += 18;
+  else if (velSolPerMin >= 0.8) score += 10;
+  else if (velSolPerMin >= 0.3) score += 5;
+
   const pass =
     fail.length === 0 &&
     socials.length >= CONFIG.minSocials &&
@@ -74,5 +82,6 @@ export function scoreCoin(coin: Coin, nowMs = Date.now()): ScoreResult {
     createdAgoSec: ageSec,
     mcUsd,
     socials,
+    realSol,
   };
 }

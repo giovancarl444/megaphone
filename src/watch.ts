@@ -6,6 +6,8 @@ import type { Coin } from "./types";
 const BASE = "https://frontend-api-v3.pump.fun/coins";
 const POLL_MS = 4_000; // 4s — matches the scanner; REST is unthrottled, no key
 const seen = new Set<string>();
+// velocity tracking: mint -> { realSol, t } so we can measure buy momentum
+const velocity = new Map<string, { realSol: number; t: number }>();
 
 /** Push alert to founder chat. No agent loop needed. */
 async function alert(text: string) {
@@ -34,7 +36,16 @@ async function pollOnce(): Promise<void> {
     for (const c of batch) {
       if (seen.has(c.mint)) continue;
       seen.add(c.mint);
-      const r = scoreCoin(c);
+      // compute buy momentum (SOL/min) from last poll if we saw it before
+      const realSolNow = (c.real_sol_reserves || 0) / 1e9;
+      const prev = velocity.get(c.mint);
+      let velSolPerMin = 0;
+      if (prev) {
+        const dtMin = Math.max(0.05, (Date.now() - prev.t) / 60000);
+        velSolPerMin = (realSolNow - prev.realSol) / dtMin;
+      }
+      velocity.set(c.mint, { realSol: realSolNow, t: Date.now() });
+      const r = scoreCoin(c, Date.now(), velSolPerMin);
       console.log(
         `${r.pass ? "✅" : "·"} ${c.symbol.padEnd(9)} s=${r.score} ${r.reasons.join(" | ")}`,
       );
@@ -53,6 +64,8 @@ async function pollOnce(): Promise<void> {
           name: c.name,
           source: "firehose",
           calledMcUsd: Math.round(r.mcUsd),
+          calledRealSol: r.realSol,
+          calledAgeSec: r.createdAgoSec,
           score: r.score,
           reasons: r.reasons,
           socials: r.socials,

@@ -25,6 +25,10 @@ export interface Callout {
   score: number;
   reasons: string[];
   socials: string[];
+  // --- call-time predictive features (for learning) ---
+  calledRealSol?: number; // bonding-curve SOL at call time
+  calledAgeSec?: number; // coin age at call time
+  v1?: boolean; // was it on v1 (older) vs v2 firehose
   // --- outcome (filled by resolve) ---
   resolvedAt?: number;
   resolvedMcUsd?: number;
