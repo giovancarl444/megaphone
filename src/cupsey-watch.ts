@@ -84,7 +84,7 @@ async function getSignatures(limit = 5): Promise<{ sig: string; blockTime: numbe
 }
 
 // Pull the token mint + SOL amount from a tx. Best-effort decode.
-async function decodeTx(sig: string): Promise<{ mint?: string; sol?: number; side: string }> {
+async function decodeTx(sig: string): Promise<{ mint?: string; sol?: number; side: string; wallet?: string }> {
   const tx = await rpc("getTransaction", [
     sig,
     { encoding: "json", maxSupportedTransactionVersion: 0 },
@@ -112,7 +112,9 @@ async function decodeTx(sig: string): Promise<{ mint?: string; sol?: number; sid
     let sol = 0;
     if (wIdx >= 0 && pre[wIdx] != null) sol = Math.abs(post[wIdx] - pre[wIdx]) / 1e9;
     const side = sol > 0 && post[wIdx] < pre[wIdx] ? "buy" : "sell/other";
-    return { mint, sol: Math.round(sol * 1000) / 1000, side };
+    // fee payer (accs[0]) is the wallet that signed — catches sub-wallets
+    const signer = accs[0] ?? WALLET;
+    return { mint, sol: Math.round(sol * 1000) / 1000, side, wallet: signer };
   } catch {
     return { side: "unknown" };
   }
@@ -131,7 +133,7 @@ function sendAlert(text: string) {
   }
 }
 
-function alertText(sig: string, blockTime: number, decoded: { mint?: string; sol?: number; side: string }, detectedMs: number): string {
+function alertText(sig: string, blockTime: number, decoded: { mint?: string; sol?: number; side: string; wallet?: string }, detectedMs: number): string {
   const t = new Date(blockTime * 1000).toISOString().slice(11, 23); // HH:mm:ss.mmm
   const now = new Date();
   const latMs = now.getTime() - blockTime * 1000;
@@ -160,7 +162,7 @@ function sendLife(text: string) {
 }
 
 // ---- paper trade on alert ----
-async function openPaperTrade(sig: string, decoded: { mint?: string; sol?: number; side: string }) {
+async function openPaperTrade(sig: string, decoded: { mint?: string; sol?: number; side: string }, wallet: string) {
   if (decoded.side !== "buy" || !decoded.mint) return; // only paper-buy his buys
   const mint = decoded.mint;
   const hisMc = await getMc(mint);
@@ -171,6 +173,7 @@ async function openPaperTrade(sig: string, decoded: { mint?: string; sol?: numbe
   const trade = {
     sig,
     mint,
+    wallet, // which of cupsey's wallets fired this
     sizeUsd: PAPER_SIZE_USD,
     hisMc: Math.round(hisMc),
     ourMc: Math.round(ourMc),
@@ -180,14 +183,17 @@ async function openPaperTrade(sig: string, decoded: { mint?: string; sol?: numbe
     fillDelayMs: FILL_DELAY_MS,
     openedAt: Date.now(),
     outcome: "OPEN",
+    path: [] as { t: number; mc: number }[], // sampled every poll, 60min even after resolve
+    triggerMc: 0,
+    fillMc: 0,
   };
   trades.unshift(trade);
   saveTrades(trades);
-  // WE BUY message
   sendLife(
     [
       `🟢 WE BUY $${PAPER_SIZE_USD}`,
       `🪙 ${mint.slice(0, 8)}…${mint.slice(-4)}`,
+      `👛 wallet: ${wallet.slice(0, 6)}…${wallet.slice(-4)}`,
       `⏱ delay: ${FILL_DELAY_MS}ms`,
       `📉 entry drag: ${dragPct}% (his $${trade.hisMc} → our $${trade.ourMc})`,
       `🎯 target: $${trade.targetMc} (+100%)`,
@@ -196,58 +202,70 @@ async function openPaperTrade(sig: string, decoded: { mint?: string; sol?: numbe
   console.log(`[cupsey-watch] 📊 paper BUY $${PAPER_SIZE_USD} | hisMc $${trade.hisMc} -> ourMc $${trade.ourMc} (drag ${dragPct}%) | target $${trade.targetMc}`);
 }
 
+// sample path point (append if last point >2s ago, keep 60min)
+function samplePath(trade: any, mc: number) {
+  const now = Date.now();
+  const last = trade.path[trade.path.length - 1];
+  if (last && now - last.t < 2000) return; // don't oversample
+  trade.path.push({ t: now, mc: Math.round(mc) });
+  // trim to 60 min
+  const cutoff = now - 60 * 60 * 1000;
+  trade.path = trade.path.filter((p: any) => p.t >= cutoff);
+}
+
 // ---- resolve open trades against live mc ----
+// HONEST FILLS: detect trigger at poll N (record triggerMc), fill at poll N+1 mc.
 export async function resolveTrades(): Promise<{ closed: number; wins: number; stops: number }> {
   const trades = loadTrades();
   let closed = 0, wins = 0, stops = 0;
   for (const t of trades) {
-    if (t.outcome !== "OPEN") continue;
     const mc = await getMc(t.mint);
+    if (mc > 0) samplePath(t, mc);
+    if (t.outcome !== "OPEN") continue;
     if (mc <= 0) continue;
+
+    // already triggered previous poll? fill now at THIS mc (the real fill)
+    if (t.pendingExit) {
+      t.fillMc = Math.round(mc);
+      t.outcome = t.pendingExit.side;
+      t.exitMc = Math.round(mc);
+      t.pnlPct = t.pendingExit.side === "WIN" ? 100 : -Math.round(((t.targetMc - mc) / t.targetMc) * 100);
+      t.pendingExit = undefined;
+      closed++;
+      if (t.outcome === "WIN") wins++; else stops++;
+      const pnl = t.outcome === "WIN" ? `+100% ($${(t.sizeUsd * 2).toFixed(0)})` : `fill ${t.pnlPct}% ($${Math.round(t.sizeUsd * (1 + t.pnlPct / 100))})`;
+      sendLife(
+        [
+          t.outcome === "WIN" ? `✅ WE SELL +100%` : `🔴 WE SELL (STOP FILL)`,
+          `🪙 ${t.mint.slice(0, 8)}…${t.mint.slice(-4)}`,
+          `🎯 trigger mc: $${t.triggerMc}`,
+          `💵 fill mc: $${t.fillMc} → ${pnl}`,
+        ].join("\n"),
+      );
+      sendLife(
+        [
+          `📋 RESOLUTION`,
+          `🪙 ${t.mint.slice(0, 8)}…${t.mint.slice(-4)}`,
+          `👛 ${t.wallet.slice(0, 6)}…${t.wallet.slice(-4)}`,
+          `💰 size: $${t.sizeUsd}`,
+          `📈 entry: his $${t.hisMc} → our $${t.ourMc} (drag ${t.entryDragPct}%)`,
+          `🎯 trigger mc: $${t.triggerMc}`,
+          `💵 fill mc: $${t.fillMc}`,
+          `📊 PnL: ${pnl}`,
+          `🧮 path samples: ${t.path.length}`,
+        ].join("\n"),
+      );
+      console.log(`[cupsey-watch] 🏁 ${t.outcome} $${t.mint.slice(0, 8)} trigger $${t.triggerMc} fill $${t.fillMc}`);
+      continue;
+    }
+
+    // detect trigger this poll (don't fill yet — next poll fills)
     if (mc >= t.targetMc) {
-      t.outcome = "WIN"; t.exitMc = Math.round(mc); t.pnlPct = 100;
-      closed++; wins++;
-      sendLife(
-        [
-          `✅ WE SELL +100%`,
-          `🪙 ${t.mint.slice(0, 8)}…${t.mint.slice(-4)}`,
-          `💵 $${t.sizeUsd} → $${t.sizeUsd * 2}`,
-          `🎯 hit 2× mc ($${t.targetMc})`,
-        ].join("\n"),
-      );
-      sendLife(
-        [
-          `📋 RESOLUTION`,
-          `🪙 ${t.mint.slice(0, 8)}…${t.mint.slice(-4)}`,
-          `💰 size: $${t.sizeUsd}`,
-          `📈 his mc: $${t.hisMc} → our mc: $${t.ourMc} (drag ${t.entryDragPct}%)`,
-          `🏁 exit mc: $${t.exitMc}`,
-          `💵 PnL: +100% ($${(t.sizeUsd * 2).toFixed(0)})`,
-        ].join("\n"),
-      );
-      console.log(`[cupsey-watch] 🏁 WIN $${t.mint.slice(0, 8)} +100% (mc $${t.exitMc})`);
+      t.pendingExit = { side: "WIN", triggerMc: Math.round(mc) };
+      t.triggerMc = Math.round(mc);
     } else if (mc <= t.stopMc) {
-      t.outcome = "STOP"; t.exitMc = Math.round(mc); t.pnlPct = -30;
-      closed++; stops++;
-      sendLife(
-        [
-          `🔴 WE SELL -30% (STOP)`,
-          `🪙 ${t.mint.slice(0, 8)}…${t.mint.slice(-4)}`,
-          `💵 $${t.sizeUsd} → $${Math.round(t.sizeUsd * 0.7)}`,
-          `🛑 mc $${t.exitMc} ≤ stop $${t.stopMc}`,
-        ].join("\n"),
-      );
-      sendLife(
-        [
-          `📋 RESOLUTION`,
-          `🪙 ${t.mint.slice(0, 8)}…${t.mint.slice(-4)}`,
-          `💰 size: $${t.sizeUsd}`,
-          `📉 his mc: $${t.hisMc} → our mc: $${t.ourMc} (drag ${t.entryDragPct}%)`,
-          `🏁 exit mc: $${t.exitMc}`,
-          `💵 PnL: -30% ($${Math.round(t.sizeUsd * 0.7)})`,
-        ].join("\n"),
-      );
-      console.log(`[cupsey-watch] 🛑 STOP $${t.mint.slice(0, 8)} -30% (mc $${t.exitMc})`);
+      t.pendingExit = { side: "STOP", triggerMc: Math.round(mc) };
+      t.triggerMc = Math.round(mc);
     }
   }
   saveTrades(trades);
@@ -268,7 +286,7 @@ export async function pollOnce(): Promise<{ scanned: number; newAlerts: number }
     const text = alertText(s.sig, s.blockTime, decoded, t0);
     sendAlert(text);
     if (decoded.side === "buy") {
-      await openPaperTrade(s.sig, decoded);
+      await openPaperTrade(s.sig, decoded, decoded.wallet ?? WALLET);
     } else if (decoded.side === "sell/other") {
       // CUPSY SELLS — info note only, does NOT trigger our exit
       sendLife(
