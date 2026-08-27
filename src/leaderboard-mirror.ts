@@ -8,6 +8,10 @@ import { PUMPFUN_TOKEN } from "./config";
 const API = "https://frontend-api-v3.pump.fun";
 const DATA_DIR = process.env.MEGAPHONE_DATA_DIR ?? path.join(process.cwd(), ".megaphone");
 
+// Only broadcast calls at/above this multiple to the private channel feed.
+// All calls are still logged to the ledger + caller sheet for analysis.
+const MIN_BROADCAST_MULT = 50;
+
 interface LeaderboardCallout {
   calloutId: string;
   coinMint: string;
@@ -82,7 +86,7 @@ export async function mirrorLeaderboard(limit = 50): Promise<{ callers: number; 
           socials: [],
         });
         // broadcast only genuinely NEW calls (logCallout returns existing if duped)
-        if (!existing.broadcasted) {
+        if (!existing.broadcasted && co.multiple >= MIN_BROADCAST_MULT) {
           // VERIFY the mint resolves to a real, live coin before sending
           const { fetchCoinNow } = await import("./whales");
           const live = await fetchCoinNow(co.coinMint);
