@@ -70,9 +70,10 @@ export const WHALE_LOOKBACK_MS = 6 * 60 * 60 * 1000; // 6h window
 export const WHALE_POLL_MS = 30_000; // 30s
 
 /**
- * Dedicated Telegram callout feed → SIGNAL topic of the group channel.
- * Group: -1003966591859, signal topic thread id = 291.
- * Format telegram:<chat_id>:<thread_id>.
- * Secrets (cookies/tokens/strategy) stay in founder DM — never broadcast here.
+ * Callout feed destination.
+ * Private channel for you + me only (validation phase, pre-public):
+ *   telegram:-1004307299899
+ * Public Signals topic (later, when ready): telegram:-1003966591859:291
+ * Secrets (cookies/tokens/strategy) stay in founder DM — never broadcast.
  */
-export const CALLOUT_CHAT = process.env.CALLOUT_CHAT ?? "telegram:-1003966591859:291";
+export const CALLOUT_CHAT = process.env.CALLOUT_CHAT ?? "telegram:-1004307299899";
