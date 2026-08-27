@@ -30,6 +30,18 @@ const DATA_DIR = process.env.MEGAPHONE_DATA_DIR ?? path.join(process.cwd(), ".me
 const SEEN_FILE = path.join(DATA_DIR, "cupsey-seen.json");
 const TRADE_FILE = path.join(DATA_DIR, "cupsey-trades.json");
 const LIVE_LOCK = path.join(DATA_DIR, "cupsey-watch.lock");
+// Only txs at/after process start (or within 2min) are "fresh". Older sigs are
+// backfill (e.g. after a seen-clear) and must NOT alert/trade/exit — especially
+// with copy-exit live, a backfilled sell could wrongly close a real position.
+const START_TIME = Date.now();
+const FRESH_WINDOW_MS = 2 * 60 * 1000;
+function isFresh(blockTime: number): boolean {
+  if (!blockTime) return false;
+  const btMs = blockTime * 1000;
+  if (btMs < START_TIME) return false; // before we started → backfill, ignore
+  const ageMs = Date.now() - btMs;
+  return ageMs <= FRESH_WINDOW_MS;
+}
 const POLL_MS = Number(process.env.CUPSY_POLL_MS ?? 8_000);
 const RPC = process.env.CUPSY_RPC ?? "https://api.mainnet-beta.solana.com";
 const RPC_FALLBACK = "https://solana-rpc.publicnode.com";
@@ -243,6 +255,7 @@ function alertText(sig: string, blockTime: number, decoded: { mint?: string; sol
   const t = new Date(blockTime * 1000).toISOString().slice(11, 23); // HH:mm:ss.mmm
   const now = new Date();
   const latMs = now.getTime() - blockTime * 1000;
+  const backfill = latMs > 10 * 60 * 1000; // >10min old = backfill, not a live catch
   const side = decoded.side === "buy" ? "BUY 🟢" : decoded.side === "sell/other" ? "SELL 🔴" : "MOVE";
   const lines = [
     `🔔 CUPSY ${side}`,
@@ -251,7 +264,7 @@ function alertText(sig: string, blockTime: number, decoded: { mint?: string; sol
   if (decoded.mint) lines.push(`🪙 token: ${decoded.mint.slice(0, 8)}…${decoded.mint.slice(-4)}`);
   if (decoded.sol) lines.push(`💰 ${decoded.sol} SOL`);
   lines.push(`⏱ block: ${t} UTC`);
-  lines.push(`⚡ latency: ${latMs >= 0 ? latMs : 0}ms (detected ${now.toISOString().slice(11, 23)})`);
+  lines.push(backfill ? `⚠️ BACKFILL (${Math.round(latMs / 60000)}min old) — no trade/exit` : `⚡ latency: ${latMs >= 0 ? latMs : 0}ms (detected ${now.toISOString().slice(11, 23)})`);
   return lines.join("\n");
 }
 
@@ -425,6 +438,13 @@ export async function pollOnce(readOnly = false): Promise<{ scanned: number; new
   for (const s of sigs) {
     if (seen.has(s.sig)) continue;
     seen.add(s.sig);
+    // FRESHNESS GATE: backfill (blockTime before start, or >2min old) is
+    // recorded as seen but NEVER alerted/traded/exited. With copy-exit live,
+    // a backfilled sell must not touch a real position.
+    if (!isFresh(s.blockTime)) {
+      console.log(`[cupsey-watch] ⏭ backfill skipped (block ${new Date(s.blockTime * 1000).toISOString().slice(11, 16)} UTC) sig ${s.sig.slice(0, 10)}`);
+      continue;
+    }
     newAlerts++;
     if (readOnly) continue; // --once while live watcher holds the lock: no alerts/trades
     const t0 = Date.now();
@@ -490,6 +510,13 @@ async function main() {
   process.on("SIGINT", () => { releaseLock(); process.exit(0); });
   process.on("SIGTERM", () => { releaseLock(); process.exit(0); });
   console.log(`[cupsey-watch] looping every ${POLL_MS / 1000}s | wallet ${WALLET.slice(0, 6)}… | -> ${CALLOUT_CHAT} | paper $${PAPER_SIZE_USD} | lock pid ${process.pid}`);
+  // PRIME seen from current chain state WITHOUT alerting/trading — prevents
+  // replaying backfill (old blocks) as fresh signals on (re)start.
+  const prime = await getSignatures(25);
+  const seen0 = loadSeen();
+  for (const s of prime) seen0.add(s.sig);
+  saveSeen(seen0);
+  console.log(`[cupsey-watch] primed seen with ${prime.length} existing sigs (no alerts)`);
   const tick = async () => {
     const r = await pollOnce(false);
     if (r.newAlerts > 0) console.log(`[cupsey-watch] tick newAlerts=${r.newAlerts}`);
