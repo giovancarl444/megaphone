@@ -64,6 +64,19 @@ async function rpc(method: string, params: any): Promise<any> {
   return j.result ?? null;
 }
 
+async function getMc(mint: string): Promise<number> {
+  try {
+    const res = await fetch(`https://frontend-api-v3.pump.fun/coins/${mint}`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) return 0;
+    const j = (await res.json()) as any;
+    return Number(j?.market_cap ?? j?.usd_market_cap ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
 async function getSignatures(limit = 5): Promise<{ sig: string; blockTime: number }[]> {
   const r = await rpc("getSignaturesForAddress", [WALLET, { limit }]);
   if (!r) return [];
@@ -131,29 +144,57 @@ function alertText(sig: string, blockTime: number, decoded: { mint?: string; sol
   if (decoded.sol) lines.push(`💰 ${decoded.sol} SOL`);
   lines.push(`⏱ block: ${t} UTC`);
   lines.push(`⚡ latency: ${latMs >= 0 ? latMs : 0}ms (detected ${now.toISOString().slice(11, 23)})`);
-  lines.push(`🔗 tx: https://solscan.io/tx/${sig}`);
-  if (decoded.mint) lines.push(`🔗 token: https://pump.fun/coin/${decoded.mint}`);
   return lines.join("\n");
 }
 
 // ---- paper trade on alert ----
-function openPaperTrade(sig: string, decoded: { mint?: string; sol?: number; side: string }) {
+async function openPaperTrade(sig: string, decoded: { mint?: string; sol?: number; side: string }) {
   if (decoded.side !== "buy" || !decoded.mint) return; // only paper-buy his buys
+  const mint = decoded.mint;
+  // HIS entry mc: at his tx block time (as close as we can get — immediate fetch)
+  const hisMc = await getMc(mint);
+  // simulate our fill delay, THEN capture OUR entry mc (the latency drag)
+  await new Promise((r) => setTimeout(r, FILL_DELAY_MS));
+  const ourMc = await getMc(mint);
   const trades = loadTrades();
   const trade = {
     sig,
-    mint: decoded.mint,
+    mint,
     sizeUsd: PAPER_SIZE_USD,
-    entrySol: decoded.sol ?? 0,
-    targetUsd: PAPER_SIZE_USD * 2, // +100%
-    stopUsd: PAPER_SIZE_USD * 0.7, // -30%
+    hisMc: Math.round(hisMc),
+    ourMc: Math.round(ourMc),
+    entryDragPct: hisMc > 0 && ourMc > 0 ? Math.round(((ourMc - hisMc) / hisMc) * 1000) / 10 : 0,
+    targetMc: Math.round(ourMc * 2), // +100% on OUR entry
+    stopMc: Math.round(ourMc * 0.7), // -30% on OUR entry
     fillDelayMs: FILL_DELAY_MS,
     openedAt: Date.now(),
     outcome: "OPEN",
   };
   trades.unshift(trade);
   saveTrades(trades);
-  console.log(`[cupsey-watch] 📊 paper BUY $${PAPER_SIZE_USD} ${decoded.mint.slice(0, 8)} (fill +${FILL_DELAY_MS}ms)`);
+  console.log(`[cupsey-watch] 📊 paper BUY $${PAPER_SIZE_USD} | hisMc $${trade.hisMc} -> ourMc $${trade.ourMc} (drag ${trade.entryDragPct}%) | target $${trade.targetMc}`);
+}
+
+// ---- resolve open trades against live mc ----
+export async function resolveTrades(): Promise<{ closed: number; wins: number; stops: number }> {
+  const trades = loadTrades();
+  let closed = 0, wins = 0, stops = 0;
+  for (const t of trades) {
+    if (t.outcome !== "OPEN") continue;
+    const mc = await getMc(t.mint);
+    if (mc <= 0) continue;
+    if (mc >= t.targetMc) {
+      t.outcome = "WIN"; t.exitMc = Math.round(mc); t.pnlPct = 100;
+      closed++; wins++;
+      console.log(`[cupsey-watch] 🏁 WIN $${t.mint.slice(0, 8)} +100% (mc $${t.exitMc})`);
+    } else if (mc <= t.stopMc) {
+      t.outcome = "STOP"; t.exitMc = Math.round(mc); t.pnlPct = -30;
+      closed++; stops++;
+      console.log(`[cupsey-watch] 🛑 STOP $${t.mint.slice(0, 8)} -30% (mc $${t.exitMc})`);
+    }
+  }
+  saveTrades(trades);
+  return { closed, wins, stops };
 }
 
 // ---- poll ----
@@ -169,9 +210,11 @@ export async function pollOnce(): Promise<{ scanned: number; newAlerts: number }
     const decoded = await decodeTx(s.sig);
     const text = alertText(s.sig, s.blockTime, decoded, t0);
     sendAlert(text);
-    openPaperTrade(s.sig, decoded);
+    await openPaperTrade(s.sig, decoded);
   }
   saveSeen(seen);
+  // resolve any open paper trades against live mc
+  await resolveTrades();
   return { scanned: sigs.length, newAlerts };
 }
 
