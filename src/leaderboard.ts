@@ -49,9 +49,27 @@ async function load(): Promise<Callout[]> {
   }
 }
 
+// Serialize all ledger writes (Windows: concurrent rename over an open file fails)
+let writeChain: Promise<void> = Promise.resolve();
 async function save(all: Callout[]): Promise<void> {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  await fs.writeFile(LEDGER, JSON.stringify(all, null, 2));
+  const run = async () => {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    const tmp = LEDGER + ".tmp";
+    await fs.writeFile(tmp, JSON.stringify(all, null, 2));
+    // Windows-safe swap: retry rename a few times (file may be briefly locked)
+    for (let i = 0; i < 5; i++) {
+      try {
+        await fs.rename(tmp, LEDGER);
+        return;
+      } catch {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+    // fallback: direct overwrite (atomicity lost but write succeeds)
+    await fs.writeFile(LEDGER, JSON.stringify(all, null, 2));
+  };
+  writeChain = writeChain.then(run, run);
+  return writeChain;
 }
 
 /** Record a new callout (dedupes by mint). Returns the stored entry. */
@@ -61,7 +79,10 @@ export async function logCallout(c: Omit<Callout, "calledAt"> & { calledAt?: num
   if (existing) return existing;
   const entry: Callout = { ...c, calledAt: c.calledAt ?? Date.now() };
   all.unshift(entry);
-  await save(all.slice(0, 2000));
+  // keep whale-mirror calls forever; cap firehose noise at 500
+  const mirrors = all.filter((x) => x.source === "whale-mirror");
+  const firehose = all.filter((x) => x.source === "firehose").slice(0, 500);
+  await save([...mirrors, ...firehose]);
   return entry;
 }
 

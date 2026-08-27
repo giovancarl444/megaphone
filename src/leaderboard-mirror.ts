@@ -7,16 +7,25 @@ import { PUMPFUN_TOKEN } from "./config";
 const API = "https://frontend-api-v3.pump.fun";
 const DATA_DIR = process.env.MEGAPHONE_DATA_DIR ?? path.join(process.cwd(), ".megaphone");
 
+interface LeaderboardCallout {
+  calloutId: string;
+  coinMint: string;
+  marketCap: number;
+  multiple: number;
+  createdAt: number;
+  thesis?: string;
+}
 interface LeaderboardEntry {
   primaryWallet: string;
-  topCallouts: { coinMint: string; symbol?: string; multiple: number; marketCap: number }[];
+  topCallouts: LeaderboardCallout[];
 }
 
 /**
  * Mirror the TOP CALLERS from pump.fun's public callout leaderboard.
  * The leaderboard API returns the best callers + their actual callouts with
- * real multiples (e.g. 126x). We log the WINNING calls as whale-mirror
- * entries — inheriting their proven win-rate, which is what drives followers.
+ * real multiples (e.g. 126x) and their thesis (the call text). We log the
+ * WINNING calls as whale-mirror entries — inheriting their proven win-rate,
+ * which is what drives followers.
  *
  * This is the strategy: bundle the best callers' calls into OUR account via
  * our filter. Their track record becomes our track record.
@@ -54,15 +63,21 @@ export async function mirrorLeaderboard(limit = 50): Promise<{ callers: number; 
       const handle = entry.primaryWallet.slice(0, 8);
       for (const co of entry.topCallouts ?? []) {
         if (co.multiple < 1.5) continue; // only mirror proven winners
-        const symbol = co.symbol ?? co.coinMint.slice(0, 6);
+        const symbol = co.coinMint.slice(0, 6);
+        const thesis = co.thesis ? co.thesis.slice(0, 120) : "";
         await logCallout({
           mint: co.coinMint,
           symbol,
           source: "whale-mirror",
           sourceHandle: handle,
           calledMcUsd: co.marketCap,
+          calledAt: co.createdAt, // real call time, not now
+          // whale-mirror calls are ALREADY proven winners — record the outcome now
+          resolvedAt: Date.now(),
+          multiple: co.multiple,
+          resolvedMcUsd: Math.round(co.marketCap * co.multiple),
           score: Math.min(100, 50 + Math.round(co.multiple)),
-          reasons: [`leaderboard call ${co.multiple}x by ${handle}`],
+          reasons: [`leaderboard ${co.multiple}x by ${handle}`, thesis ? `thesis: ${thesis}` : ""].filter(Boolean),
           socials: [],
         });
         calls++;
