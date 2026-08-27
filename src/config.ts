@@ -68,3 +68,10 @@ export const WHALE_LOOKBACK_MS = 6 * 60 * 60 * 1000; // 6h window
 
 /** Mirror poll cadence (ms). */
 export const WHALE_POLL_MS = 30_000; // 30s
+
+/**
+ * Dedicated Telegram callout feed channel (separate from founder DM).
+ * Set via env CALLOUT_CHAT. Default: founder DM.
+ * Channel: MEGAPHONE (-1003966591859)
+ */
+export const CALLOUT_CHAT = process.env.CALLOUT_CHAT ?? "telegram:-1003966591859";
