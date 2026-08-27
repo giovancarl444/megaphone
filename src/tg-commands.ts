@@ -49,6 +49,20 @@ export async function handleTelegramCommand(text: string): Promise<string> {
         .map((c) => `${c.symbol} ${c.score} · $${c.calledMcUsd} · ${c.mint.slice(0, 8)}…`)
         .join("\n");
     }
+    case "/digest": {
+      // top proven winners — ready to post manually if CF blocks auto-posting
+      const calls = await recentCallouts(500);
+      const wins = calls
+        .filter((c) => (c.multiple ?? 0) >= 1.5)
+        .sort((a, b) => (b.multiple ?? 0) - (a.multiple ?? 0))
+        .slice(0, 5);
+      if (!wins.length) return "no proven winners yet — mirror still warming up";
+      const lines = wins.map((c, i) => {
+        const thesis = (c.reasons.find((r) => r.startsWith("thesis:")) ?? "").replace("thesis: ", "");
+        return `${i + 1}. $${c.symbol} — ${c.multiple?.toFixed(1)}x (called @ $${Math.round(c.calledMcUsd)})\n   ${thesis || c.reasons.join(" ")}\n   pump.fun/coin/${c.mint}`;
+      });
+      return "🔥 TOP PROVEN CALLS (copy-paste to pump.fun if auto-post is blocked):\n\n" + lines.join("\n\n");
+    }
     case "/stop":
       return "⏸ send via process manager. On Windows: stop the daemon task or kill tsx src/daemon.ts";
     case "/start":
@@ -59,6 +73,7 @@ export async function handleTelegramCommand(text: string): Promise<string> {
         "/status — ledger + track record",
         "/cookie <str> — paste browser cookies to enable posting",
         "/calls — recent calls",
+        "/digest — top proven calls (ready to post)",
         "/stop /start — daemon control",
       ].join("\n");
   }
