@@ -7,6 +7,7 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const LOG = path.join(ROOT, "..", ".daemon.out.log");
 const tsx = path.join(ROOT, "..", "node_modules", "tsx", "dist", "cli.mjs");
 const watch = path.join(ROOT, "watch.ts");
+const cupsey = path.join(ROOT, "cupsey-watch.ts");
 
 /**
  * Supervisor: keeps the firehose watcher alive forever.
@@ -33,7 +34,23 @@ async function start() {
     });
   };
 
+  const launchCupsey = () => {
+    const cp = spawn(process.execPath, [tsx, cupsey], {
+      cwd: path.join(ROOT, ".."),
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+    const tag = `[${new Date().toISOString()}] [cupsey] `;
+    cp.stdout.on("data", (d: Buffer) => fs.appendFile(LOG, tag + d.toString()));
+    cp.stderr.on("data", (d: Buffer) => fs.appendFile(LOG, tag + "[err] " + d.toString()));
+    cp.on("exit", (code: number) => {
+      console.error(`[supervisor] cupsey-watch exited ${code} — relaunching in 10s`);
+      setTimeout(launchCupsey, 10_000);
+    });
+  };
+
   launch();
+  launchCupsey();
 
   // heartbeat + resolve-loop driver in the supervisor itself
   const tick = async () => {
