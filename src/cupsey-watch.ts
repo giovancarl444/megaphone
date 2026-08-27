@@ -147,15 +147,26 @@ function alertText(sig: string, blockTime: number, decoded: { mint?: string; sol
   return lines.join("\n");
 }
 
+// ---- Telegram lifecycle messages (trade events) ----
+function sendLife(text: string) {
+  try {
+    const tmp = path.join(DATA_DIR, `cupsey-life-${Date.now()}.txt`);
+    writeFileSync(tmp, text, "utf8");
+    execSync(`hermes send -t ${CALLOUT_CHAT} -f "${tmp}"`, { stdio: "ignore" });
+    unlinkSync(tmp);
+  } catch (e) {
+    console.error("[cupsey-watch] life failed:", (e as Error).message);
+  }
+}
+
 // ---- paper trade on alert ----
 async function openPaperTrade(sig: string, decoded: { mint?: string; sol?: number; side: string }) {
   if (decoded.side !== "buy" || !decoded.mint) return; // only paper-buy his buys
   const mint = decoded.mint;
-  // HIS entry mc: at his tx block time (as close as we can get — immediate fetch)
   const hisMc = await getMc(mint);
-  // simulate our fill delay, THEN capture OUR entry mc (the latency drag)
   await new Promise((r) => setTimeout(r, FILL_DELAY_MS));
   const ourMc = await getMc(mint);
+  const dragPct = hisMc > 0 && ourMc > 0 ? Math.round(((ourMc - hisMc) / hisMc) * 1000) / 10 : 0;
   const trades = loadTrades();
   const trade = {
     sig,
@@ -163,16 +174,26 @@ async function openPaperTrade(sig: string, decoded: { mint?: string; sol?: numbe
     sizeUsd: PAPER_SIZE_USD,
     hisMc: Math.round(hisMc),
     ourMc: Math.round(ourMc),
-    entryDragPct: hisMc > 0 && ourMc > 0 ? Math.round(((ourMc - hisMc) / hisMc) * 1000) / 10 : 0,
-    targetMc: Math.round(ourMc * 2), // +100% on OUR entry
-    stopMc: Math.round(ourMc * 0.7), // -30% on OUR entry
+    entryDragPct: dragPct,
+    targetMc: Math.round(ourMc * 2),
+    stopMc: Math.round(ourMc * 0.7),
     fillDelayMs: FILL_DELAY_MS,
     openedAt: Date.now(),
     outcome: "OPEN",
   };
   trades.unshift(trade);
   saveTrades(trades);
-  console.log(`[cupsey-watch] 📊 paper BUY $${PAPER_SIZE_USD} | hisMc $${trade.hisMc} -> ourMc $${trade.ourMc} (drag ${trade.entryDragPct}%) | target $${trade.targetMc}`);
+  // WE BUY message
+  sendLife(
+    [
+      `🟢 WE BUY $${PAPER_SIZE_USD}`,
+      `🪙 ${mint.slice(0, 8)}…${mint.slice(-4)}`,
+      `⏱ delay: ${FILL_DELAY_MS}ms`,
+      `📉 entry drag: ${dragPct}% (his $${trade.hisMc} → our $${trade.ourMc})`,
+      `🎯 target: $${trade.targetMc} (+100%)`,
+    ].join("\n"),
+  );
+  console.log(`[cupsey-watch] 📊 paper BUY $${PAPER_SIZE_USD} | hisMc $${trade.hisMc} -> ourMc $${trade.ourMc} (drag ${dragPct}%) | target $${trade.targetMc}`);
 }
 
 // ---- resolve open trades against live mc ----
@@ -186,10 +207,46 @@ export async function resolveTrades(): Promise<{ closed: number; wins: number; s
     if (mc >= t.targetMc) {
       t.outcome = "WIN"; t.exitMc = Math.round(mc); t.pnlPct = 100;
       closed++; wins++;
+      sendLife(
+        [
+          `✅ WE SELL +100%`,
+          `🪙 ${t.mint.slice(0, 8)}…${t.mint.slice(-4)}`,
+          `💵 $${t.sizeUsd} → $${t.sizeUsd * 2}`,
+          `🎯 hit 2× mc ($${t.targetMc})`,
+        ].join("\n"),
+      );
+      sendLife(
+        [
+          `📋 RESOLUTION`,
+          `🪙 ${t.mint.slice(0, 8)}…${t.mint.slice(-4)}`,
+          `💰 size: $${t.sizeUsd}`,
+          `📈 his mc: $${t.hisMc} → our mc: $${t.ourMc} (drag ${t.entryDragPct}%)`,
+          `🏁 exit mc: $${t.exitMc}`,
+          `💵 PnL: +100% ($${(t.sizeUsd * 2).toFixed(0)})`,
+        ].join("\n"),
+      );
       console.log(`[cupsey-watch] 🏁 WIN $${t.mint.slice(0, 8)} +100% (mc $${t.exitMc})`);
     } else if (mc <= t.stopMc) {
       t.outcome = "STOP"; t.exitMc = Math.round(mc); t.pnlPct = -30;
       closed++; stops++;
+      sendLife(
+        [
+          `🔴 WE SELL -30% (STOP)`,
+          `🪙 ${t.mint.slice(0, 8)}…${t.mint.slice(-4)}`,
+          `💵 $${t.sizeUsd} → $${Math.round(t.sizeUsd * 0.7)}`,
+          `🛑 mc $${t.exitMc} ≤ stop $${t.stopMc}`,
+        ].join("\n"),
+      );
+      sendLife(
+        [
+          `📋 RESOLUTION`,
+          `🪙 ${t.mint.slice(0, 8)}…${t.mint.slice(-4)}`,
+          `💰 size: $${t.sizeUsd}`,
+          `📉 his mc: $${t.hisMc} → our mc: $${t.ourMc} (drag ${t.entryDragPct}%)`,
+          `🏁 exit mc: $${t.exitMc}`,
+          `💵 PnL: -30% ($${Math.round(t.sizeUsd * 0.7)})`,
+        ].join("\n"),
+      );
       console.log(`[cupsey-watch] 🛑 STOP $${t.mint.slice(0, 8)} -30% (mc $${t.exitMc})`);
     }
   }
@@ -210,7 +267,18 @@ export async function pollOnce(): Promise<{ scanned: number; newAlerts: number }
     const decoded = await decodeTx(s.sig);
     const text = alertText(s.sig, s.blockTime, decoded, t0);
     sendAlert(text);
-    await openPaperTrade(s.sig, decoded);
+    if (decoded.side === "buy") {
+      await openPaperTrade(s.sig, decoded);
+    } else if (decoded.side === "sell/other") {
+      // CUPSY SELLS — info note only, does NOT trigger our exit
+      sendLife(
+        [
+          `🔔 CUPSY SELLS (note)`,
+          `🪙 ${decoded.mint ? decoded.mint.slice(0, 8) + "…" + decoded.mint.slice(-4) : "unknown"}`,
+          `ℹ️ info only — we hold to our +100% rule`,
+        ].join("\n"),
+      );
+    }
   }
   saveSeen(seen);
   // resolve any open paper trades against live mc
