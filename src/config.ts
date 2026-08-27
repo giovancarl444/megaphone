@@ -70,8 +70,9 @@ export const WHALE_LOOKBACK_MS = 6 * 60 * 60 * 1000; // 6h window
 export const WHALE_POLL_MS = 30_000; // 30s
 
 /**
- * Dedicated Telegram callout feed channel (separate from founder DM).
- * Set via env CALLOUT_CHAT. Default: founder DM.
- * Channel: MEGAPHONE (-1003966591859)
+ * Dedicated Telegram callout feed → SIGNAL topic of the group channel.
+ * Group: -1003966591859, signal topic thread id = 291.
+ * Format telegram:<chat_id>:<thread_id>.
+ * Secrets (cookies/tokens/strategy) stay in founder DM — never broadcast here.
  */
-export const CALLOUT_CHAT = process.env.CALLOUT_CHAT ?? "telegram:-1003966591859";
+export const CALLOUT_CHAT = process.env.CALLOUT_CHAT ?? "telegram:-1003966591859:291";
