@@ -83,9 +83,16 @@ export async function mirrorLeaderboard(limit = 50): Promise<{ callers: number; 
         });
         // broadcast only genuinely NEW calls (logCallout returns existing if duped)
         if (!existing.broadcasted) {
-          broadcastCallout(existing);
-          await markBroadcasted(co.coinMint);
-          calls++;
+          // VERIFY the mint resolves to a real, live coin before sending
+          const { fetchCoinNow } = await import("./whales");
+          const live = await fetchCoinNow(co.coinMint);
+          if (live) {
+            broadcastCallout(existing);
+            await markBroadcasted(co.coinMint);
+            calls++;
+          } else {
+            console.log(`[mirror-lb] skip broadcast (mint not live): ${co.coinMint}`);
+          }
         }
       }
     }

@@ -1,4 +1,8 @@
 import { execSync } from "node:child_process";
+import { promises as fs } from "node:fs";
+import * as fsSync from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { FOUNDER_CHAT, PROOF_CHAT } from "./config";
 import type { Callout } from "./leaderboard";
 
@@ -31,7 +35,11 @@ export function formatCallout(c: Callout): string {
 export function broadcastCallout(c: Callout): void {
   const text = formatCallout(c);
   try {
-    execSync(`hermes send --to ${calloutChat()} ${JSON.stringify(text)}`, { stdio: "ignore" });
+    // write to a temp file so real newlines survive (JSON.stringify mangles them)
+    const tmp = path.join(os.tmpdir(), `callout-${c.mint.slice(0, 8)}.txt`);
+    fsSync.writeFileSync(tmp, text, "utf8");
+    execSync(`hermes send -t ${calloutChat()} -f "${tmp}"`, { stdio: "ignore" });
+    fsSync.unlinkSync(tmp);
     console.log(`[broadcast] sent $${c.symbol} -> ${calloutChat()}`);
   } catch (e) {
     console.warn("[broadcast] failed:", (e as Error).message);
