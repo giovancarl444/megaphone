@@ -35,6 +35,7 @@ export interface Callout {
   multiple?: number; // resolvedMcUsd / calledMcUsd
   graduated?: boolean;
   proofPosted?: boolean; // already broadcast as proof
+  broadcasted?: boolean; // already sent to the Telegram callout feed
   notes?: string;
 }
 
@@ -96,6 +97,11 @@ export async function updateCallout(
   if (idx < 0) return;
   all[idx] = { ...all[idx], ...patch };
   await save(all);
+}
+
+/** Mark a callout as already broadcast to the Telegram feed. */
+export async function markBroadcasted(mint: string): Promise<void> {
+  await updateCallout(mint, { broadcasted: true });
 }
 
 /** Resolve a call's outcome (called later to build the track record). */

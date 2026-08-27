@@ -1,7 +1,8 @@
 import puppeteer from "puppeteer";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { logCallout } from "./leaderboard";
+import { logCallout, markBroadcasted } from "./leaderboard";
+import { broadcastCallout } from "./broadcast";
 import { PUMPFUN_TOKEN } from "./config";
 
 const API = "https://frontend-api-v3.pump.fun";
@@ -65,7 +66,7 @@ export async function mirrorLeaderboard(limit = 50): Promise<{ callers: number; 
         if (co.multiple < 1.5) continue; // only mirror proven winners
         const symbol = co.coinMint.slice(0, 6);
         const thesis = co.thesis ? co.thesis.slice(0, 120) : "";
-        await logCallout({
+        const existing = await logCallout({
           mint: co.coinMint,
           symbol,
           source: "whale-mirror",
@@ -80,7 +81,12 @@ export async function mirrorLeaderboard(limit = 50): Promise<{ callers: number; 
           reasons: [`leaderboard ${co.multiple}x by ${handle}`, thesis ? `thesis: ${thesis}` : ""].filter(Boolean),
           socials: [],
         });
-        calls++;
+        // broadcast only genuinely NEW calls (logCallout returns existing if duped)
+        if (!existing.broadcasted) {
+          broadcastCallout(existing);
+          await markBroadcasted(co.coinMint);
+          calls++;
+        }
       }
     }
     console.log(`[mirror-lb] mirrored ${calls} winning calls from ${data.callouts.length} top callers`);

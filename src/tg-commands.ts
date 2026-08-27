@@ -63,6 +63,17 @@ export async function handleTelegramCommand(text: string): Promise<string> {
       });
       return "🔥 TOP PROVEN CALLS (copy-paste to pump.fun if auto-post is blocked):\n\n" + lines.join("\n\n");
     }
+    case "/broadcast": {
+      // send the top proven calls to the Telegram callout feed right now
+      const { broadcastBatch } = await import("./broadcast");
+      const calls = await recentCallouts(500);
+      const wins = calls
+        .filter((c) => (c.multiple ?? 0) >= 1.5)
+        .sort((a, b) => (b.multiple ?? 0) - (a.multiple ?? 0))
+        .slice(0, parseInt(arg || "5", 10));
+      const n = broadcastBatch(wins);
+      return `📡 broadcasted ${n} proven calls to the feed`;
+    }
     case "/stop":
       return "⏸ send via process manager. On Windows: stop the daemon task or kill tsx src/daemon.ts";
     case "/start":
@@ -74,6 +85,7 @@ export async function handleTelegramCommand(text: string): Promise<string> {
         "/cookie <str> — paste browser cookies to enable posting",
         "/calls — recent calls",
         "/digest — top proven calls (ready to post)",
+        "/broadcast [n] — send top n proven calls to the feed now",
         "/stop /start — daemon control",
       ].join("\n");
   }
