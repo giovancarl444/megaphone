@@ -88,6 +88,9 @@ export async function mirrorLeaderboard(limit = 50): Promise<{ callers: number; 
           const live = await fetchCoinNow(co.coinMint);
           if (live) {
             broadcastCallout(existing);
+            // open a paper scalp (100% target / 30% stop) on the verified call
+            const { scalpCall } = await import("./paper-scalp");
+            await scalpCall(existing);
             await markBroadcasted(co.coinMint);
             calls++;
           } else {

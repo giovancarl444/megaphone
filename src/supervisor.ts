@@ -43,6 +43,12 @@ async function start() {
     } catch (e) {
       console.error("[supervisor] resolve-loop error:", (e as Error).message);
     }
+    try {
+      const { resolvePaperTrades } = await import("./paper-scalp");
+      await resolvePaperTrades();
+    } catch (e) {
+      console.error("[supervisor] scalp error:", (e as Error).message);
+    }
   };
   await tick();
   setInterval(tick, 60_000);
