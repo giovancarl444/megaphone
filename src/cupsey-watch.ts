@@ -349,6 +349,23 @@ function markCopyExit(mint: string): void {
   if (changed) saveTrades(trades);
 }
 
+// Position-dedup helpers: the channel speaks in POSITIONS, not chunk txns.
+function hasOpenTrade(mint: string): boolean {
+  return loadTrades().some((t) => t.mint === mint && t.outcome === "OPEN");
+}
+// Append a note to the open trade for this mint (chunk buy while already in).
+function noteOnTrade(mint: string, note: string): void {
+  const trades = loadTrades();
+  let changed = false;
+  for (const t of trades) {
+    if (t.mint === mint && t.outcome === "OPEN") {
+      t.notes = t.notes ? t.notes + " | " + note : note;
+      changed = true;
+    }
+  }
+  if (changed) saveTrades(trades);
+}
+
 // ---- resolve open trades against live mc ----
 // HONEST FILLS: detect trigger at poll N (record triggerMc), fill at poll N+1 mc.
 export async function resolveTrades(): Promise<{ closed: number; wins: number; stops: number }> {
@@ -452,20 +469,33 @@ export async function pollOnce(readOnly = false): Promise<{ scanned: number; new
     const text = alertText(s.sig, s.blockTime, decoded, t0);
     sendAlert(text);
     if (decoded.side === "buy") {
-      await openPaperTrade(s.sig, decoded, decoded.wallet ?? WALLET);
+      const mint = decoded.mint;
+      if (mint && hasOpenTrade(mint)) {
+        // chunk buy of a mint we're already in: one position, not a second.
+        noteOnTrade(mint, `chunk buy ${s.sig.slice(0, 8)}`);
+        sendLife(`➕ chunk buy ${mint.slice(0, 8)}…${mint.slice(-4)} — position already open, no new trade`);
+      } else {
+        await openPaperTrade(s.sig, decoded, decoded.wallet ?? WALLET);
+      }
     } else if (decoded.side === "sell/other") {
       // CUPSY SELLS — we COPY his exit: mark our open trade on this mint to
       // close at the next poll's live mc. Rule (founder, 00:1x): if he sells,
       // we sell — no matter what. Still record +100% path data for replay.
       const mint = decoded.mint;
-      if (mint) markCopyExit(mint);
-      sendLife(
-        [
-          `🔔 CUPSY SELLS → WE EXIT`,
-          `🪙 ${mint ? mint.slice(0, 8) + "…" + mint.slice(-4) : "unknown"}`,
-          `ℹ️ copy-exit armed — closing our position at next live fill`,
-        ].join("\n"),
-      );
+      if (!mint) continue;
+      const armed = !hasOpenTrade(mint) ? false : (markCopyExit(mint), true);
+      if (armed) {
+        sendLife(
+          [
+            `🔔 CUPSY SELLS → WE EXIT`,
+            `🪙 ${mint.slice(0, 8)}…${mint.slice(-4)}`,
+            `ℹ️ copy-exit armed — closing our position at next live fill`,
+          ].join("\n"),
+        );
+      } else {
+        // no open position for this mint → chunk sell, one-line note only
+        sendLife(`➖ CUPSY sells ${mint.slice(0, 8)}…${mint.slice(-4)} — no open position, ignored`);
+      }
     }
   }
   saveSeen(seen);
