@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { CONFIG, FOUNDER_CHAT } from "./config";
+import { CONFIG, CALLOUT_CHAT } from "./config";
 import { scoreCoin } from "./score";
 import type { Coin } from "./types";
 
@@ -13,7 +13,7 @@ const velocity = new Map<string, { realSol: number; t: number }>();
 async function alert(text: string) {
   try {
     const { execSync } = await import("node:child_process");
-    execSync(`hermes send --to ${FOUNDER_CHAT} ${JSON.stringify(text)}`, {
+    execSync(`hermes send --to ${CALLOUT_CHAT} ${JSON.stringify(text)}`, {
       stdio: "ignore",
     });
     console.log("[alert] sent ->", text.split("\n")[0]);
