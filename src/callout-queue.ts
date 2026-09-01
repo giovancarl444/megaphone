@@ -15,6 +15,18 @@
  */
 import { promises as fs, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { execSync } from "node:child_process";
+
+const FOUNDER_DM = "telegram:1915394365";
+
+function alertFounder(msg: string) {
+  try {
+    // write to temp file to avoid shell-quoting issues, then hermes send -f
+    const tmp = path.join(process.cwd(), ".megaphone", "alert.tmp.txt");
+    writeFileSync(tmp, msg, "utf8");
+    execSync(`hermes send --to ${FOUNDER_DM} -f "${tmp}"`, { timeout: 15000, windowsHide: true, stdio: "ignore" });
+  } catch (e) { console.error("[callout-queue] alert failed:", (e as Error).message.slice(0, 120)); }
+}
 
 const DATA_DIR = path.join(process.cwd(), ".megaphone");
 const QUEUE_FILE = path.join(DATA_DIR, "callout-queue.json");
@@ -124,6 +136,12 @@ async function scan() {
                 devOpenRatio: devInfo?.open_ratio || 0, launchedAt: bt, status: "QUEUED",
                 thesis: "Fresh launch from a proven dev — catching it early.",
               });
+              // HUMAN-IN-THE-LOOP: alert founder — needs a $1 buy to unlock the callout
+              alertFounder(
+                `🚀 FRESH LAUNCH — proven dev (open ratio ${((devInfo?.open_ratio || 0) * 100).toFixed(0)}%)\n\n` +
+                `mint: ${mint}\npump.fun: https://pump.fun/coin/${mint}\n\n` +
+                `Buy ~$1 of this coin to unlock the callout → I'll auto-post it once you confirm.`
+              );
               found++;
             }
           }
