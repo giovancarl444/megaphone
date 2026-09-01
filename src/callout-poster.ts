@@ -32,7 +32,7 @@ async function cdpEvaluate(expression: string): Promise<any> {
   };
   await new Promise((r) => (ws.onopen = r));
   await send("Runtime.enable");
-  const res = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+  const res: any = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
   ws.close();
   return res?.result?.value;
 }
