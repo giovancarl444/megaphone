@@ -116,7 +116,21 @@ async function rpc(method: string, params: any): Promise<any> {
 // (usd_market_cap, no auth, no CF cookie needed). Fallback: on-chain bonding
 // curve read (chain-native, CF-proof) so the watcher still works if the API blips.
 async function mcUsd(mint: string): Promise<number> {
-  // 1) pump.fun public read (usd_market_cap is the USD field; market_cap is SOL)
+  // 1) GMGN token info — reliable, USD market cap direct (we hold the API key)
+  try {
+    const { execSync } = await import("node:child_process");
+    // Windows-safe: no /dev/null redirect (cmd.exe can't see it). Capture stderr via try/catch.
+    const out = execSync(
+      `gmgn-cli token info --chain sol --address ${mint}`,
+      { encoding: "utf8", timeout: 8000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] },
+    );
+    const j = JSON.parse(out);
+    // GMGN token info: no direct market_cap; for pump.fun bonding-curve coins
+    // the full supply is in the curve, so liquidity(USD) ≈ market cap.
+    const usd = Number(j?.liquidity ?? 0);
+    if (usd > 0) return Math.round(usd);
+  } catch { /* fall through */ }
+  // 2) pump.fun public read (usd_market_cap is the USD field; market_cap is SOL)
   try {
     const res = await fetch(`https://frontend-api-v3.pump.fun/coins/${mint}`, {
       headers: { Accept: "application/json" },
@@ -127,7 +141,7 @@ async function mcUsd(mint: string): Promise<number> {
       if (usd > 0) return Math.round(usd);
     }
   } catch { /* fall through to chain */ }
-  // 2) on-chain fallback: read the pump.fun bonding-curve account.
+  // 3) on-chain fallback: read the pump.fun bonding-curve account.
   try {
     const PROG = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
     const { PublicKey } = await import("@solana/web3.js");
@@ -162,7 +176,13 @@ async function mcUsd(mint: string): Promise<number> {
     // price (SOL per token) = (vSol - rSol)/1e9 / ((vToken - rToken)/1e6)
     const priceSol = (vSol - rSol) / 1e9 / ((vToken - rToken) / 1e6);
     const mcSol = priceSol * (totalSupply / 1e6); // total tokens = supply/1e6
-    const SOL_USD = 200;
+    // live SOL price (fetch once per call is fine; fallback 150 if RPC fails)
+    let SOL_USD = 150;
+    try {
+      const pr = await fetch("https://frontend-api-v3.pump.fun/sol/price", { headers: { Accept: "application/json" } });
+      const pj = await pr.json();
+      SOL_USD = Number(pj?.solPrice ?? pj?.price ?? 150) || 150;
+    } catch {}
     return Math.round(mcSol * SOL_USD);
   } catch {
     return 0;
@@ -289,8 +309,16 @@ function sendLife(text: string) {
 }
 
 // ---- paper trade on alert ----
+// MIN_COPY_SOL: ignore sub-$MIN buy chunks (noise — the whale dumps tiny test buys
+// that are not signal). Default 3 SOL. Set 0 to copy everything.
+const MIN_COPY_SOL = Number(process.env.MIN_COPY_SOL ?? 3);
 async function openPaperTrade(sig: string, decoded: { mint?: string; sol?: number; side: string; wallet?: string }, wallet: string) {
   if (decoded.side !== "buy" || !decoded.mint) return; // only paper-buy his buys
+  const sol = decoded.sol ?? 0;
+  if (sol < MIN_COPY_SOL) {
+    console.log(`[cupsey-watch] ⏭ skipped buy ${sol} SOL < MIN_COPY_SOL(${MIN_COPY_SOL}) — noise chunk, no trade`);
+    return;
+  }
   const mint = decoded.mint;
   const hisMc = await mcUsd(mint);
   await new Promise((r) => setTimeout(r, FILL_DELAY_MS));
