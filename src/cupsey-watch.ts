@@ -24,12 +24,15 @@ import { promises as fs, writeFileSync, unlinkSync, readFileSync } from "node:fs
 import path from "node:path";
 import { CALLOUT_CHAT } from "./config";
 
-const WALLET = "3tL1nfq5tb9RfydszNwMytYAZrnD3gpkmxxcdTvpPS6S";
+// WALLET can be overridden via COPY_WATCH_WALLET (discovery-driven copy engine).
+// Default = cupsey (legacy single-whale path).
+const WALLET = process.env.COPY_WATCH_WALLET ?? "3tL1nfq5tb9RfydszNwMytYAZrnD3gpkmxxcdTvpPS6S";
+// Data dir can be overridden via COPY_DATA_DIR so multiple copy instances don't collide.
+const DATA_DIR = process.env.COPY_DATA_DIR ?? (process.env.MEGAPHONE_DATA_DIR ?? path.join(process.cwd(), ".megaphone"));
+const SEEN_FILE = path.join(DATA_DIR, "copy-seen.json");
+const TRADE_FILE = path.join(DATA_DIR, "copybook.json");
+const LIVE_LOCK = path.join(DATA_DIR, "copy-watch.lock");
 const PUMP_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
-const DATA_DIR = process.env.MEGAPHONE_DATA_DIR ?? path.join(process.cwd(), ".megaphone");
-const SEEN_FILE = path.join(DATA_DIR, "cupsey-seen.json");
-const TRADE_FILE = path.join(DATA_DIR, "cupsey-trades.json");
-const LIVE_LOCK = path.join(DATA_DIR, "cupsey-watch.lock");
 // Only txs at/after process start (or within 2min) are "fresh". Older sigs are
 // backfill (e.g. after a seen-clear) and must NOT alert/trade/exit — especially
 // with copy-exit live, a backfilled sell could wrongly close a real position.
@@ -166,8 +169,8 @@ async function mcUsd(mint: string): Promise<number> {
   }
 }
 
-async function getSignatures(limit = 5): Promise<{ sig: string; blockTime: number }[]> {
-  const r = await rpc("getSignaturesForAddress", [WALLET, { limit }]);
+async function getSignatures(limit = 5, wallet = WALLET): Promise<{ sig: string; blockTime: number }[]> {
+  const r = await rpc("getSignaturesForAddress", [wallet, { limit }]);
   if (!r) return [];
   return r.map((s: any) => ({ sig: s.signature, blockTime: s.blockTime ?? 0 }));
 }
@@ -208,7 +211,7 @@ async function resolveMint(tx: any): Promise<string | undefined> {
 }
 
 // Pull the token mint + SOL amount from a tx. Best-effort decode.
-async function decodeTx(sig: string): Promise<{ mint?: string; mintCandidates?: string[]; sol?: number; side: string; wallet?: string }> {
+async function decodeTx(sig: string, wallet = WALLET): Promise<{ mint?: string; mintCandidates?: string[]; sol?: number; side: string; wallet?: string }> {
   const tx = await rpc("getTransaction", [
     sig,
     { encoding: "json", maxSupportedTransactionVersion: 0 },
@@ -219,47 +222,59 @@ async function decodeTx(sig: string): Promise<{ mint?: string; mintCandidates?: 
     const accs: string[] = msg.accountKeys ?? [];
     // candidate mints: valid base58, 32-44 chars, not wallet/program
     const cands = accs.filter(
-      (a: string) => a.length >= 32 && a.length <= 44 && a !== WALLET && a !== PUMP_PROGRAM,
+      (a: string) => a.length >= 32 && a.length <= 44 && a !== wallet && a !== PUMP_PROGRAM,
     );
     const mint = await resolveMint(tx); // deterministic: pump.fun instruction → SPL mint
     // SOL amount: scan balance changes for our wallet
     const meta = tx.meta ?? {};
     const pre = meta.preBalances ?? [];
     const post = meta.postBalances ?? [];
-    const wIdx = accs.indexOf(WALLET);
+    const wIdx = accs.indexOf(wallet);
     let sol = 0;
     if (wIdx >= 0 && pre[wIdx] != null) sol = Math.abs(post[wIdx] - pre[wIdx]) / 1e9;
     const side = sol > 0 && post[wIdx] < pre[wIdx] ? "buy" : "sell/other";
     // fee payer (accs[0]) is the wallet that signed — catches sub-wallets
-    const signer = accs[0] ?? WALLET;
+    const signer = accs[0] ?? wallet;
     return { mint: mint ?? cands[0], mintCandidates: cands, sol: Math.round(sol * 1000) / 1000, side, wallet: signer };
   } catch {
     return { side: "unknown" };
   }
 }
 
-// ---- Telegram ----
-function sendAlert(text: string) {
+// ---- Telegram (with retry — hermes send is intermittently flaky) ----
+function sendRaw(target: string, file: string): boolean {
   try {
-    const tmp = path.join(DATA_DIR, `cupsey-alert-${Date.now()}.txt`);
-    writeFileSync(tmp, text, "utf8");
-    execSync(`hermes send -t ${CALLOUT_CHAT} -f "${tmp}"`, { stdio: "ignore" });
-    unlinkSync(tmp);
-    console.log(`[cupsey-watch] 🔔 alert sent -> ${CALLOUT_CHAT}`);
-  } catch (e) {
-    console.error("[cupsey-watch] alert failed:", (e as Error).message);
+    execSync(`hermes send -t ${target} -f "${file}"`, { stdio: "ignore", timeout: 12000 });
+    return true;
+  } catch { return false; }
+}
+function sendTo(text: string) {
+  const targets = [CALLOUT_CHAT, "telegram:1915394365"];
+  for (const target of targets) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const tmp = path.join(DATA_DIR, `cupsey-${Date.now()}-${attempt}.txt`);
+      try { writeFileSync(tmp, text, "utf8"); } catch { continue; }
+      if (sendRaw(target, tmp)) { try { unlinkSync(tmp); } catch {} return; }
+      try { unlinkSync(tmp); } catch {}
+      if (attempt < 2) { try { execSync("ping -n 2 127.0.0.1 >nul 2>&1"); } catch {} }
+    }
   }
+  console.error("[cupsey-watch] send failed after retries (all targets)");
+}
+function sendAlert(text: string) {
+  sendTo(text);
+  console.log(`[cupsey-watch] 🔔 alert -> ${CALLOUT_CHAT}`);
 }
 
-function alertText(sig: string, blockTime: number, decoded: { mint?: string; sol?: number; side: string; wallet?: string }, detectedMs: number): string {
+function alertText(sig: string, blockTime: number, decoded: { mint?: string; sol?: number; side: string; wallet?: string }, detectedMs: number, handle = "cupsey", wallet = WALLET): string {
   const t = new Date(blockTime * 1000).toISOString().slice(11, 23); // HH:mm:ss.mmm
   const now = new Date();
   const latMs = now.getTime() - blockTime * 1000;
   const backfill = latMs > 10 * 60 * 1000; // >10min old = backfill, not a live catch
   const side = decoded.side === "buy" ? "BUY 🟢" : decoded.side === "sell/other" ? "SELL 🔴" : "MOVE";
   const lines = [
-    `🔔 CUPSY ${side}`,
-    `💎 wallet: ${WALLET.slice(0, 6)}…${WALLET.slice(-4)}`,
+    `🔔 ${handle.toUpperCase()} ${side}`,
+    `💎 wallet: ${wallet.slice(0, 6)}…${wallet.slice(-4)}`,
   ];
   if (decoded.mint) lines.push(`🪙 token: ${decoded.mint.slice(0, 8)}…${decoded.mint.slice(-4)}`);
   if (decoded.sol) lines.push(`💰 ${decoded.sol} SOL`);
@@ -270,14 +285,7 @@ function alertText(sig: string, blockTime: number, decoded: { mint?: string; sol
 
 // ---- Telegram lifecycle messages (trade events) ----
 function sendLife(text: string) {
-  try {
-    const tmp = path.join(DATA_DIR, `cupsey-life-${Date.now()}.txt`);
-    writeFileSync(tmp, text, "utf8");
-    execSync(`hermes send -t ${CALLOUT_CHAT} -f "${tmp}"`, { stdio: "ignore" });
-    unlinkSync(tmp);
-  } catch (e) {
-    console.error("[cupsey-watch] life failed:", (e as Error).message);
-  }
+  sendTo(text);
 }
 
 // ---- paper trade on alert ----
@@ -388,6 +396,13 @@ export async function resolveTrades(): Promise<{ closed: number; wins: number; s
 
     // already triggered previous poll? fill now at THIS mc (the real fill)
     if (t.pendingExit) {
+      // glitch guard at fill too — don't book a fake WIN on a bad read
+      const prev = (t.path || []).length ? (t.path[t.path.length - 1] as any).mc : t.ourMc;
+      if (prev > 0 && mc > prev * 5 && t.pendingExit.side === "WIN") {
+        console.log(`[cupsey-watch] ⚠️ fill glitch guard: ${t.mint.slice(0, 8)} read $${mc} vs prev $${prev} — pendingExit cleared, no WIN booked`);
+        t.pendingExit = undefined;
+        continue;
+      }
       t.fillMc = Math.round(mc);
       t.exitMc = Math.round(mc);
       const side = t.pendingExit.side;
@@ -435,6 +450,14 @@ export async function resolveTrades(): Promise<{ closed: number; wins: number; s
     }
 
     // detect trigger this poll (don't fill yet — next poll fills)
+    // GLITCH GUARD: a single mc read >5x the last recorded sample is almost
+    // certainly a bad feed (cross-coin cache, stale response). Don't trigger
+    // exits on it — log and skip so the book stays honest.
+    const prev = (t.path || []).length ? (t.path[t.path.length - 1] as any).mc : t.ourMc;
+    if (prev > 0 && mc > prev * 5) {
+      console.log(`[cupsey-watch] ⚠️ mc glitch guard: ${t.mint.slice(0, 8)} read $${mc} vs prev $${prev} — skipped (no trigger)`);
+      continue;
+    }
     if (mc >= t.targetMc) {
       t.pendingExit = { side: "WIN", triggerMc: Math.round(mc) };
       t.triggerMc = Math.round(mc);
@@ -449,58 +472,59 @@ export async function resolveTrades(): Promise<{ closed: number; wins: number; s
 
 // ---- poll ----
 export async function pollOnce(readOnly = false): Promise<{ scanned: number; newAlerts: number }> {
-  const sigs = await getSignatures(25);
   const seen = loadSeen();
+  let scanned = 0;
   let newAlerts = 0;
-  for (const s of sigs) {
-    if (seen.has(s.sig)) continue;
-    seen.add(s.sig);
-    // FRESHNESS GATE: backfill (blockTime before start, or >2min old) is
-    // recorded as seen but NEVER alerted/traded/exited. With copy-exit live,
-    // a backfilled sell must not touch a real position.
-    if (!isFresh(s.blockTime)) {
-      console.log(`[cupsey-watch] ⏭ backfill skipped (block ${new Date(s.blockTime * 1000).toISOString().slice(11, 16)} UTC) sig ${s.sig.slice(0, 10)}`);
-      continue;
-    }
-    newAlerts++;
-    if (readOnly) continue; // --once while live watcher holds the lock: no alerts/trades
-    const t0 = Date.now();
-    const decoded = await decodeTx(s.sig);
-    const text = alertText(s.sig, s.blockTime, decoded, t0);
-    sendAlert(text);
-    if (decoded.side === "buy") {
-      const mint = decoded.mint;
-      if (mint && hasOpenTrade(mint)) {
-        // chunk buy of a mint we're already in: one position, not a second.
-        noteOnTrade(mint, `chunk buy ${s.sig.slice(0, 8)}`);
-        sendLife(`➕ chunk buy ${mint.slice(0, 8)}…${mint.slice(-4)} — position already open, no new trade`);
-      } else {
-        await openPaperTrade(s.sig, decoded, decoded.wallet ?? WALLET);
+
+  // Build the list of (handle, wallet) pairs to scan — single wallet (env-overridable).
+  const pairs: { handle: string; wallet: string }[] = [{ handle: "copy", wallet: WALLET }];
+
+  for (const { handle, wallet } of pairs) {
+    const sigs = await getSignatures(25, wallet);
+    scanned += sigs.length;
+    for (const s of sigs) {
+      const key = `${wallet}:${s.sig}`; // per-wallet attribution
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (!isFresh(s.blockTime)) {
+        console.log(`[cupsey-watch] ⏭ backfill skipped (${handle} ${wallet.slice(0, 6)} block ${new Date(s.blockTime * 1000).toISOString().slice(11, 16)} UTC) sig ${s.sig.slice(0, 10)}`);
+        continue;
       }
-    } else if (decoded.side === "sell/other") {
-      // CUPSY SELLS — we COPY his exit: mark our open trade on this mint to
-      // close at the next poll's live mc. Rule (founder, 00:1x): if he sells,
-      // we sell — no matter what. Still record +100% path data for replay.
-      const mint = decoded.mint;
-      if (!mint) continue;
-      const armed = !hasOpenTrade(mint) ? false : (markCopyExit(mint), true);
-      if (armed) {
-        sendLife(
-          [
-            `🔔 CUPSY SELLS → WE EXIT`,
-            `🪙 ${mint.slice(0, 8)}…${mint.slice(-4)}`,
-            `ℹ️ copy-exit armed — closing our position at next live fill`,
-          ].join("\n"),
-        );
-      } else {
-        // no open position for this mint → chunk sell, one-line note only
-        sendLife(`➖ CUPSY sells ${mint.slice(0, 8)}…${mint.slice(-4)} — no open position, ignored`);
+      newAlerts++;
+      if (readOnly) continue; // --once while live watcher holds the lock: no alerts/trades
+      const t0 = Date.now();
+      const decoded = await decodeTx(s.sig, wallet);
+      const text = alertText(s.sig, s.blockTime, decoded, t0, handle, wallet);
+      sendAlert(text);
+      if (decoded.side === "buy") {
+        const mint = decoded.mint;
+        if (mint && hasOpenTrade(mint)) {
+          noteOnTrade(mint, `chunk buy ${s.sig.slice(0, 8)}`);
+          sendLife(`➕ chunk buy ${mint.slice(0, 8)}…${mint.slice(-4)} — position already open, no new trade`);
+        } else {
+          await openPaperTrade(s.sig, decoded, decoded.wallet ?? wallet);
+        }
+      } else if (decoded.side === "sell/other") {
+        const mint = decoded.mint;
+        if (!mint) continue;
+        const armed = !hasOpenTrade(mint) ? false : (markCopyExit(mint), true);
+        if (armed) {
+          sendLife(
+            [
+              `🔔 ${handle.toUpperCase()} SELLS → WE EXIT`,
+              `🪙 ${mint.slice(0, 8)}…${mint.slice(-4)}`,
+              `ℹ️ copy-exit armed — closing our position at next live fill`,
+            ].join("\n"),
+          );
+        } else {
+          sendLife(`➖ ${handle.toUpperCase()} sells ${mint.slice(0, 8)}…${mint.slice(-4)} — no open position, ignored`);
+        }
       }
     }
   }
   saveSeen(seen);
   if (!readOnly) await resolveTrades();
-  return { scanned: sigs.length, newAlerts };
+  return { scanned, newAlerts };
 }
 
 async function main() {
@@ -525,11 +549,14 @@ async function main() {
     return;
   }
   if (arg === "--scan") {
-    const sigs = await getSignatures(10);
-    console.log(`[scan] wallet ${WALLET.slice(0, 6)}… | ${sigs.length} recent sigs`);
-    for (const s of sigs) {
-      const d = await decodeTx(s.sig);
-      console.log(`  ${s.sig.slice(0, 10)} side=${d.side} mint=${d.mint ? d.mint.slice(0, 8) : "-"} sol=${d.sol ?? "-"} wallet=${d.wallet ? d.wallet.slice(0, 6) : "-"}`);
+    const pairs = [{ handle: "copy", wallet: WALLET }];
+    for (const { handle, wallet } of pairs) {
+      const sigs = await getSignatures(10, wallet);
+      console.log(`[scan] ${handle} ${wallet.slice(0, 6)}… | ${sigs.length} recent sigs`);
+      for (const s of sigs) {
+        const d = await decodeTx(s.sig, wallet);
+        console.log(`  ${s.sig.slice(0, 10)} side=${d.side} mint=${d.mint ? d.mint.slice(0, 8) : "-"} sol=${d.sol ?? "-"} wallet=${d.wallet ? d.wallet.slice(0, 6) : "-"}`);
+      }
     }
     return;
   }
@@ -539,14 +566,50 @@ async function main() {
   process.on("exit", releaseLock);
   process.on("SIGINT", () => { releaseLock(); process.exit(0); });
   process.on("SIGTERM", () => { releaseLock(); process.exit(0); });
-  console.log(`[cupsey-watch] looping every ${POLL_MS / 1000}s | wallet ${WALLET.slice(0, 6)}… | -> ${CALLOUT_CHAT} | paper $${PAPER_SIZE_USD} | lock pid ${process.pid}`);
+
+  // ---- STARTUP RECONCILIATION (honest books) ----
+  // If the process died between setting pendingExit and persisting the WIN,
+  // the book would show OPEN forever. Replay the recorded mc path: if any
+  // sample crossed targetMc (or stopMc), resolve the trade NOW.
+  {
+    const trades = loadTrades();
+    let changed = false;
+    for (const t of trades) {
+      if (t.outcome !== "OPEN" || !t.ourMc) continue;
+      const path = t.path || [];
+      const crossedTarget = path.some((s: any) => s.mc >= t.targetMc);
+      const crossedStop = path.some((s: any) => s.mc <= t.stopMc);
+      if (crossedTarget || (t.pendingExit && t.pendingExit.side === "WIN")) {
+        t.outcome = "WIN"; t.exitMc = t.triggerMc || t.targetMc; t.pnlPct = 100;
+        t.pendingExit = undefined; t.resolvedAt = Date.now(); changed = true;
+        console.log(`[cupsey-watch] 🔧 reconciliation: ${t.mint.slice(0, 8)} → WIN (path crossed ${t.targetMc})`);
+      } else if (crossedStop || (t.pendingExit && t.pendingExit.side === "STOP")) {
+        t.outcome = "STOP"; t.exitMc = t.triggerMc || t.stopMc;
+        t.pnlPct = -Math.round(((t.ourMc - t.exitMc) / t.ourMc) * 1000) / 10;
+        t.pendingExit = undefined; t.resolvedAt = Date.now(); changed = true;
+        console.log(`[cupsey-watch] 🔧 reconciliation: ${t.mint.slice(0, 8)} → STOP`);
+      } else if (t.pendingExit && t.pendingExit.side === "HISSELL") {
+        t.outcome = "HISSELL"; t.exitMc = t.triggerMc || t.ourMc;
+        t.pnlPct = -Math.round(((t.ourMc - t.exitMc) / t.ourMc) * 1000) / 10;
+        t.pendingExit = undefined; t.resolvedAt = Date.now(); changed = true;
+        console.log(`[cupsey-watch] 🔧 reconciliation: ${t.mint.slice(0, 8)} → HISSELL`);
+      }
+    }
+    if (changed) saveTrades(trades);
+  }
+  console.log(`[cupsey-watch] looping every ${POLL_MS / 1000}s | wallet=${WALLET.slice(0, 6)} | -> ${CALLOUT_CHAT} | paper $${PAPER_SIZE_USD} | lock pid ${process.pid}`);
   // PRIME seen from current chain state WITHOUT alerting/trading — prevents
   // replaying backfill (old blocks) as fresh signals on (re)start.
-  const prime = await getSignatures(25);
+  const primePairs = [WALLET];
   const seen0 = loadSeen();
-  for (const s of prime) seen0.add(s.sig);
+  let primed = 0;
+  for (const w of primePairs) {
+    const prime = await getSignatures(25, w);
+    for (const s of prime) seen0.add(`${w}:${s.sig}`);
+    primed += prime.length;
+  }
   saveSeen(seen0);
-  console.log(`[cupsey-watch] primed seen with ${prime.length} existing sigs (no alerts)`);
+  console.log(`[cupsey-watch] primed seen with ${primed} existing sigs (no alerts)`);
   const tick = async () => {
     const r = await pollOnce(false);
     if (r.newAlerts > 0) console.log(`[cupsey-watch] tick newAlerts=${r.newAlerts}`);
