@@ -77,4 +77,4 @@ export const WHALE_POLL_MS = 30_000; // 30s
  * Public Signals topic (later): telegram:-1003966591859:291
  * Secrets (cookies/tokens/strategy) stay in founder DM — never broadcast.
  */
-export const CALLOUT_CHAT = process.env.CALLOUT_CHAT ?? "telegram:@pumpyscorner";
+export const CALLOUT_CHAT = process.env.CALLOUT_CHAT ?? "telegram:@pumpyscorner"; // validation channel — NOT founder DM
