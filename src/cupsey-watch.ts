@@ -433,7 +433,14 @@ export async function resolveTrades(): Promise<{ closed: number; wins: number; s
       }
       t.fillMc = Math.round(mc);
       t.exitMc = Math.round(mc);
-      const side = t.pendingExit.side;
+      let side = t.pendingExit.side;
+      // INTEGRITY CHECK: a WIN whose fill is below our entry is impossible —
+      // the trigger came from a bad read. Re-decide honestly at this real mc.
+      if (side === "WIN" && mc < t.ourMc) {
+        console.log(`[cupsey-watch] ⚠️ WIN integrity fail: ${t.mint.slice(0, 8)} fill $${mc} < entry $${t.ourMc} — re-deciding`);
+        if (mc <= t.stopMc) { side = "STOP"; }
+        else { t.pendingExit = undefined; continue; } // neither: keep OPEN, wait
+      }
       t.outcome = side; // WIN | STOP | HISSELL
       // HONEST pnl: measured from OUR entry to the real fill, in USD.
       // WIN target is +100% (fillMc >= 2x ourMc). STOP/HISSELL book the true
