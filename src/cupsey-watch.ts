@@ -577,22 +577,24 @@ async function main() {
     for (const t of trades) {
       if (t.outcome !== "OPEN" || !t.ourMc) continue;
       const path = t.path || [];
+      // PATH IS THE TRUTH. pendingExit is only trusted if the recorded path
+      // corroborates it — a stale flag from a glitch read must never book a WIN.
       const crossedTarget = path.some((s: any) => s.mc >= t.targetMc);
       const crossedStop = path.some((s: any) => s.mc <= t.stopMc);
-      if (crossedTarget || (t.pendingExit && t.pendingExit.side === "WIN")) {
+      if (crossedTarget) {
         t.outcome = "WIN"; t.exitMc = t.triggerMc || t.targetMc; t.pnlPct = 100;
         t.pendingExit = undefined; t.resolvedAt = Date.now(); changed = true;
         console.log(`[cupsey-watch] 🔧 reconciliation: ${t.mint.slice(0, 8)} → WIN (path crossed ${t.targetMc})`);
-      } else if (crossedStop || (t.pendingExit && t.pendingExit.side === "STOP")) {
+      } else if (crossedStop) {
         t.outcome = "STOP"; t.exitMc = t.triggerMc || t.stopMc;
         t.pnlPct = -Math.round(((t.ourMc - t.exitMc) / t.ourMc) * 1000) / 10;
         t.pendingExit = undefined; t.resolvedAt = Date.now(); changed = true;
-        console.log(`[cupsey-watch] 🔧 reconciliation: ${t.mint.slice(0, 8)} → STOP`);
-      } else if (t.pendingExit && t.pendingExit.side === "HISSELL") {
-        t.outcome = "HISSELL"; t.exitMc = t.triggerMc || t.ourMc;
-        t.pnlPct = -Math.round(((t.ourMc - t.exitMc) / t.ourMc) * 1000) / 10;
-        t.pendingExit = undefined; t.resolvedAt = Date.now(); changed = true;
-        console.log(`[cupsey-watch] 🔧 reconciliation: ${t.mint.slice(0, 8)} → HISSELL`);
+        console.log(`[cupsey-watch] 🔧 reconciliation: ${t.mint.slice(0, 8)} → STOP (path crossed ${t.stopMc})`);
+      } else if (t.pendingExit) {
+        // stale/inconsistent pendingExit (e.g. glitch WIN that path never reached):
+        // clear it and let the live loop re-decide from real mc.
+        console.log(`[cupsey-watch] 🔧 reconciliation: ${t.mint.slice(0, 8)} pendingExit(${t.pendingExit.side}) NOT corroborated by path (max $${path.reduce((m: number, s: any) => Math.max(m, s.mc), 0)}) — cleared`);
+        t.pendingExit = undefined; changed = true;
       }
     }
     if (changed) saveTrades(trades);
