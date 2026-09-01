@@ -52,6 +52,26 @@ def book_stats(trades):
     out["winrate"] = round(100 * out["win"] / max(1, out["win"] + out["stop"]), 0)
     return out
 
+def callout_summary():
+    """Latest snapshot from rewards-tracker (rewards.jsonl) — the account's callouts + multiples."""
+    p = MEG / ".megaphone" / "rewards.jsonl"
+    if not p.exists():
+        return {"total": 0, "rows": []}
+    last = None
+    try:
+        for line in p.read_text("utf-8").splitlines():
+            if line.strip():
+                last = json.loads(line)
+    except Exception:
+        return {"total": 0, "rows": []}
+    if not last:
+        return {"total": 0, "rows": []}
+    rows = [{"symbol": (r.get("symbol") or r.get("mint") or "?")[:10], "mc": r.get("mc") or 0,
+             "x": round(float(r.get("multiple") or 1), 2), "thesis": (r.get("thesis") or "")[:38],
+             "ts": r.get("createdAt") or r.get("ts") or 0} for r in (last.get("rows") or [])[:12]]
+    return {"total": last.get("total") or 0, "active": last.get("active") or 0,
+            "resolved": last.get("resolved") or 0, "rows": rows}
+
 @app.get("/api/state")
 def state():
     copy_book = load(COPY_DIR / "copybook.json") or []
@@ -83,6 +103,18 @@ def state():
         },
         "devs_top": (watchlist.get("devs") or [])[:10],
         "events": events[:15],
+        "callouts": callout_summary(),
+        "ideas": [
+            {"name": "Callout Auto-Poster", "status": "⏳ GATE", "desc": "Post engine signals as pump.fun callouts (POST /callout/create VERIFIED). Needs ≥$1 token holdings in session wallet.", "owner": "founder buy $5"},
+            {"name": "Token Launch + Blast", "status": "💡 IDEA", "desc": "Bundle-launch coins (pumpdev /api/create-bundle) + volume/bump to top. Reddit-validated $300-1K/launch claim. Risk: rug-rep.", "owner": "later"},
+            {"name": "Bump Bot", "status": "💡 IDEA", "desc": "Automated small buys to keep a coin trending on pump.fun (Plankton-style).", "owner": "later"},
+            {"name": "Volume Bot", "status": "💡 IDEA", "desc": "Generate volume on launched coins via multi-wallet buys (commenter: $100K total).", "owner": "later"},
+            {"name": "Auto-Sniper + Stop-Loss", "status": "🟡 PARTIAL", "desc": "Paper logic exists (copy engine). Needs real-execution wiring via pumpdev trade API.", "owner": "later"},
+            {"name": "Dev Monitor", "status": "✅ DONE", "desc": "dev-watch: tracks 30 known-good dev wallets for new launches. Live.", "owner": "pumpy"},
+            {"name": "Whale Copy Engine", "status": "✅ LIVE", "desc": "Gfsk5Zoj paper copy, +100/-30, copy-exit, glitch guards, honest book.", "owner": "pumpy"},
+            {"name": "GMGN Discovery", "status": "✅ DONE", "desc": "Smart-money + dev open-ratio ranking via gmgn-cli. Dashboard :8000.", "owner": "pumpy"},
+            {"name": "OPS Dashboard", "status": "✅ LIVE", "desc": "This board — engines, books, watchlists, events.", "owner": "pumpy"},
+        ],
         "ts": time.strftime("%H:%M:%S"),
     }
 
@@ -121,8 +153,13 @@ td{padding:4px 6px;border-bottom:1px solid #161e2a}
 </div>
 <div class="grid">
   <div class="card"><h2>🛰 Dev Watchlist (top 10)</h2><table id="devs"></table></div>
-  <div class="card"><h2>📡 Recent Events</h2><div id="events"></div></div>
+  <div class="card"><h2>📢 Your Callouts <span id="callout-count" class="dim"></span></h2><table id="callouts"></table></div>
 </div>
+<div class="grid">
+  <div class="card"><h2>📡 Recent Events</h2><div id="events"></div></div>
+  <div class="card"><h2>🧹 (reserved)</h2><div class="dim">more panels coming</div></div>
+</div>
+<div class="card" style="margin-bottom:12px"><h2>💡 IDEAS / PROJECTS</h2><table id="ideas"></table></div>
 <script>
 const $=id=>document.getElementById(id);
 const cls={WIN:'win',STOP:'stop',HISSELL:'hissell',VOID:'void',OPEN:'open'};
@@ -152,6 +189,16 @@ async function tick(){
       const t=new Date(e.t).toTimeString().slice(0,8);
       return `<div class="ev"><span class="dim">${t}</span><span>${e.kind} ${e.mint} <span class="${cls[e.outcome]||'dim'}">${e.outcome}</span></span><span class="${e.pnl>=0?'grn':'red'}">${e.pnl!=null?(e.pnl>0?'+':'')+e.pnl+'%':''}</span></div>`;
     }).join('')||'<div class="dim">no events yet</div>';
+    // ideas
+    $('ideas').innerHTML='<tr><th>project</th><th>status</th><th>note</th><th>owner</th></tr>'+s.ideas.map(x=>
+      `<tr><td><b>${x.name}</b></td><td>${x.status}</td><td class="dim">${x.desc}</td><td>${x.owner}</td></tr>`).join('');
+    // callouts
+    const co=s.callouts;
+    $('callout-count').textContent=`(${co.total} total · ${co.active} active)`;
+    $('callouts').innerHTML='<tr><th>coin</th><th>mc</th><th>x</th><th>thesis</th></tr>'+(co.rows||[]).map(r=>{
+      const x=parseFloat(r.x)||1;
+      return `<tr><td><b>${r.symbol}</b></td><td>$${(r.mc||0).toLocaleString()}</td><td class="${x>=1?'grn':'red'}">${x.toFixed(2)}x</td><td class="dim">${r.thesis}</td></tr>`;
+    }).join('')||'<div class="dim">no callouts yet</div>';
   }catch(e){$('ts').textContent='ERR '+e.message}
 }
 function rows(ts){
