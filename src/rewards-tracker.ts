@@ -56,13 +56,21 @@ function summarize(callouts: any[]): any {
     symbol: c.symbol || "",
     mc: c.marketCap || 0,
     multiple: c.multiple || 1,
+    maxMult: c.maxMultiplier || c.multiple || 1,
+    maxMultAt: c.maxMultiplierAt || 0,
+    views: c.viewCount || 0,
+    likes: c.likes || 0,
+    reposts: c.repostCount || 0,
+    comments: c.commentCount || 0,
     thesis: (c.thesis || "").slice(0, 50),
     createdAt: c.createdAt || 0,
     resolved: c.resolved || false,
   }));
   const active = rows.filter((r) => !r.resolved);
   const resolved = rows.filter((r) => r.resolved);
-  return { total: rows.length, active: active.length, resolved: resolved.length, rows };
+  const best = rows.reduce((m, r) => (r.maxMult > m.maxMult ? r : m), rows[0] || { maxMult: 0 });
+  const totalViews = rows.reduce((s, r) => s + r.views, 0);
+  return { total: rows.length, active: active.length, resolved: resolved.length, best: best.maxMult || 0, totalViews, rows };
 }
 
 export async function runOnce(): Promise<any> {
@@ -93,10 +101,10 @@ async function main() {
   const s = await runOnce();
   if (s.error) { console.error("ERROR:", s.error); process.exit(1); }
   console.log(`=== YOUR CALLOUTS (${s.total}) ===`);
-  console.log(`active: ${s.active} | resolved: ${s.resolved}`);
+  console.log(`active: ${s.active} | resolved: ${s.resolved} | best maxMult: ${s.best}x | total views: ${s.totalViews}`);
   for (const r of s.rows.slice(0, 15)) {
     const d = r.createdAt ? new Date(r.createdAt).toISOString().slice(0, 16) : "?";
-    console.log(`  ${r.resolved ? "✅" : "🕐"} ${r.symbol || r.mint.slice(0, 8)} | mc $${r.mc} | x${r.multiple} | ${d} | ${r.thesis}`);
+    console.log(`  ${r.resolved ? "✅" : "🕐"} ${r.symbol || r.mint.slice(0, 8)} | mc $${r.mc} | now x${r.multiple.toFixed(2)} peak x${r.maxMult.toFixed(2)} | 👁${r.views} 👍${r.likes} | ${d} | ${r.thesis}`);
   }
 }
 

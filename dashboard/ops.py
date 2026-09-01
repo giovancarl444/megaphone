@@ -67,10 +67,12 @@ def callout_summary():
     if not last:
         return {"total": 0, "rows": []}
     rows = [{"symbol": (r.get("symbol") or r.get("mint") or "?")[:10], "mc": r.get("mc") or 0,
-             "x": round(float(r.get("multiple") or 1), 2), "thesis": (r.get("thesis") or "")[:38],
+             "x": round(float(r.get("multiple") or 1), 2), "peak": round(float(r.get("maxMult") or 1), 2),
+             "views": r.get("views") or 0, "thesis": (r.get("thesis") or "")[:38],
              "ts": r.get("createdAt") or r.get("ts") or 0} for r in (last.get("rows") or [])[:12]]
     return {"total": last.get("total") or 0, "active": last.get("active") or 0,
-            "resolved": last.get("resolved") or 0, "rows": rows}
+            "resolved": last.get("resolved") or 0, "best": last.get("best") or 0,
+            "totalViews": last.get("totalViews") or 0, "rows": rows}
 
 @app.get("/api/state")
 def state():
@@ -194,10 +196,10 @@ async function tick(){
       `<tr><td><b>${x.name}</b></td><td>${x.status}</td><td class="dim">${x.desc}</td><td>${x.owner}</td></tr>`).join('');
     // callouts
     const co=s.callouts;
-    $('callout-count').textContent=`(${co.total} total · ${co.active} active)`;
-    $('callouts').innerHTML='<tr><th>coin</th><th>mc</th><th>x</th><th>thesis</th></tr>'+(co.rows||[]).map(r=>{
-      const x=parseFloat(r.x)||1;
-      return `<tr><td><b>${r.symbol}</b></td><td>$${(r.mc||0).toLocaleString()}</td><td class="${x>=1?'grn':'red'}">${x.toFixed(2)}x</td><td class="dim">${r.thesis}</td></tr>`;
+    $('callout-count').textContent=`(${co.total} total · ${co.active} active · best ${co.best}x · ${co.totalViews} views)`;
+    $('callouts').innerHTML='<tr><th>coin</th><th>mc</th><th>now</th><th>peak</th><th>👁</th><th>thesis</th></tr>'+(co.rows||[]).map(r=>{
+      const x=parseFloat(r.x)||1; const pk=parseFloat(r.peak)||1;
+      return `<tr><td><b>${r.symbol}</b></td><td>$${(r.mc||0).toLocaleString()}</td><td class="${x>=1?'grn':'red'}">${x.toFixed(2)}x</td><td class="${pk>=1?'grn':'red'}">${pk.toFixed(2)}x</td><td class="dim">${r.views||0}</td><td class="dim">${r.thesis}</td></tr>`;
     }).join('')||'<div class="dim">no callouts yet</div>';
   }catch(e){$('ts').textContent='ERR '+e.message}
 }
