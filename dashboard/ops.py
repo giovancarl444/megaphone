@@ -110,6 +110,7 @@ def state():
             {"name": "Callout Auto-Poster", "status": "⏳ GATE", "desc": "Post engine signals as pump.fun callouts (POST /callout/create VERIFIED). Needs ≥$1 token holdings in session wallet.", "owner": "founder buy $5"},
             {"name": "Token Launch + Blast", "status": "💡 IDEA", "desc": "Bundle-launch coins (pumpdev /api/create-bundle) + volume/bump to top. Reddit-validated $300-1K/launch claim. Risk: rug-rep.", "owner": "later"},
             {"name": "Bump Bot", "status": "💡 IDEA", "desc": "Automated small buys to keep a coin trending on pump.fun (Plankton-style).", "owner": "later"},
+            {"name": "Padre Affiliate", "status": "💡 PARKED", "desc": "Pump.fun-owned terminal (ex-Padre). 35% fee-cashback referral program; links /rk/getbonus + /rk/backdoor LIVE. Monetize AFTER audience exists (fee-based, needs active traders).", "owner": "later"},
             {"name": "Volume Bot", "status": "💡 IDEA", "desc": "Generate volume on launched coins via multi-wallet buys (commenter: $100K total).", "owner": "later"},
             {"name": "Auto-Sniper + Stop-Loss", "status": "🟡 PARTIAL", "desc": "Paper logic exists (copy engine). Needs real-execution wiring via pumpdev trade API.", "owner": "later"},
             {"name": "Dev Monitor", "status": "✅ DONE", "desc": "dev-watch: tracks 30 known-good dev wallets for new launches. Live.", "owner": "pumpy"},
