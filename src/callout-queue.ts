@@ -48,6 +48,7 @@ interface QueuedCallout {
   postedAt?: number;
   calloutId?: string;
   safety?: SafetyVerdict;
+  bought?: boolean;
 }
 
 function loadQueue(): QueuedCallout[] {
@@ -138,23 +139,55 @@ async function scan() {
                 devOpenRatio: devInfo?.open_ratio || 0, launchedAt: bt, status: "QUEUED",
                 thesis: "Fresh launch from a proven dev — catching it early.",
               });
-              // HUMAN-IN-THE-LOOP: alert founder — needs a $1 buy to unlock the callout
-              alertFounder(
-                `🚀 FRESH LAUNCH — proven dev (open ratio ${((devInfo?.open_ratio || 0) * 100).toFixed(0)}%)\n\n` +
-                `mint: ${mint}\npump.fun: https://pump.fun/coin/${mint}\n\n` +
-                `Buy ~$1 of this coin to unlock the callout → I'll auto-post it once you confirm.`
-              );
-              // SAFETY GATE: auto-scan the mint; DANGER callouts never reach the queue
+              // SAFETY GATE FIRST: scan the mint; DANGER never reaches buy/post
+              let safe = false;
               try {
                 const v: SafetyVerdict = await scanMint(mint);
                 queue[queue.length - 1].safety = v;
                 if (v.verdict === "DANGER") {
                   queue[queue.length - 1].status = "SKIPPED";
                   console.log(`[callout-queue] ⛔ ${mint.slice(0, 8)} DANGER (${v.flags.join(", ")}) — auto-skipped`);
+                  saveQueue(queue);
                   continue;
                 }
+                safe = true;
                 console.log(`[callout-queue] 🛡️ ${mint.slice(0, 8)} ${v.verdict} score ${v.score} ${v.flags.length ? "(" + v.flags.join(", ") + ")" : "clean"}`);
-              } catch { console.log(`[callout-queue] ⚠️ safety scan failed for ${mint.slice(0, 8)} — proceeding (manual review)`); }
+              } catch { console.log(`[callout-queue] ⚠️ safety scan failed for ${mint.slice(0, 8)} — proceeding (manual review)`); safe = true; }
+
+              // AUTO-BUY: $1 via the browser session (the callout gate)
+              if (safe) {
+                try {
+                  console.log(`[callout-queue] 💰 auto-buy $1 of ${mint.slice(0, 8)}...`);
+                  const buy = execSync(`node src/auto-buy.mjs ${mint} 1`, { encoding: "utf8", timeout: 120000, windowsHide: true, cwd: process.cwd() });
+                  console.log(`[callout-queue] ✅ auto-buy done: ${buy.split("\n").filter(l => l.trim()).slice(-3).join(" | ")}`);
+                  queue[queue.length - 1].status = "READY";
+                  queue[queue.length - 1].bought = true;
+                  saveQueue(queue);
+                  // AUTO-POST the callout
+                  try {
+                    console.log(`[callout-queue] 📢 posting callout for ${mint.slice(0, 8)}...`);
+                    const post = execSync(`node node_modules/tsx/dist/cli.mjs src/callout-poster.ts ${mint} "Fresh launch from a proven dev — catching it early. Small cap, watching momentum closely. DYOR."`, { encoding: "utf8", timeout: 60000, windowsHide: true, cwd: process.cwd() });
+                    queue[queue.length - 1].status = "POSTED";
+                    queue[queue.length - 1].postedAt = Date.now();
+                    saveQueue(queue);
+                    console.log(`[callout-queue] 🎉 CALLOUT POSTED: ${mint.slice(0, 8)}`);
+                    alertFounder(`🎉 AUTO-CALLOUT POSTED: ${mint.slice(0, 8)}… — buy + callout fully automated. https://pump.fun/coin/${mint}`);
+                  } catch (pe) {
+                    console.log(`[callout-queue] ⚠️ callout post failed (${(pe as Error).message.slice(0, 100)}) — coin bought, manual post needed`);
+                    alertFounder(`💰 Bought $1 of ${mint.slice(0, 8)}… but callout post failed — posting manually? https://pump.fun/coin/${mint}`);
+                  }
+                } catch (be) {
+                  console.log(`[callout-queue] ⚠️ auto-buy failed (${(be as Error).message.slice(0, 100)}) — manual buy needed`);
+                  // HUMAN-IN-THE-LOOP fallback: alert founder to buy manually
+                  alertFounder(
+                    `🚀 FRESH LAUNCH — proven dev (open ratio ${((devInfo?.open_ratio || 0) * 100).toFixed(0)}%)\n\n` +
+                    `mint: ${mint}\npump.fun: https://pump.fun/coin/${mint}\n\n` +
+                    `Auto-buy failed — buy ~$1 manually to unlock the callout.`
+                  );
+                  queue[queue.length - 1].status = "NEEDS_BUY";
+                  saveQueue(queue);
+                }
+              }
               found++;
             }
           }
