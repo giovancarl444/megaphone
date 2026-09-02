@@ -38,7 +38,20 @@ async function main() {
   }
   await sleep(1500);
 
-  // 0) close any open dialog (aria-label Close)
+  // 0) PRE-FLIGHT: check session balance before anything (never attempt with < $2)
+  const preBal = await ev(`(() => {
+    const t = document.body.innerText;
+    const m = t.match(/\\$([0-9.]+)/);
+    return m ? parseFloat(m[1]) : null;
+  })()`);
+  console.log("pre-flight balance: $", preBal);
+  if (preBal !== null && preBal < 2) {
+    console.error("⚠️ session balance too low for auto-buy ($" + preBal + ") — skipping (founder top-up needed)");
+    ws.close();
+    process.exit(3);
+  }
+
+  // 0b) close any open dialog (aria-label Close)
   const closed = await ev(`(() => {
     const c = [...document.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === 'Close' && b.getBoundingClientRect().width > 0);
     if (c) { c.click(); return 'closed'; }

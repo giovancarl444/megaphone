@@ -36,6 +36,27 @@ const MIN_MC = 1500;       // skip dust (<$1.5K)
 const MAX_MC = 30000;      // still early (<$30K) — the callout sweet spot
 const FRESH_MIN = 3 * 60;  // launch within last 3 minutes
 
+// ---- RISK BUDGET (surgical mode) ----
+// Hard caps so the session wallet can never be rinsed in a burst:
+//  - MAX_BUYS_PER_DAY:   max auto-buys in a rolling 24h window (default 10 = $10/day)
+//  - MAX_BUYS_PER_HOUR:  max auto-buys per hour (default 3)
+//  - MAX_TOTAL_BUYS:     absolute lifetime cap for this wallet epoch (default 40 = ~$40)
+// Env-overridable: CALLOUT_MAX_DAY, CALLOUT_MAX_HOUR, CALLOUT_MAX_TOTAL
+const MAX_DAY = Number(process.env.CALLOUT_MAX_DAY || 10);
+const MAX_HOUR = Number(process.env.CALLOUT_MAX_HOUR || 3);
+const MAX_TOTAL = Number(process.env.CALLOUT_MAX_TOTAL || 40);
+
+function withinBudget(queue: QueuedCallout[]): { ok: boolean; reason?: string } {
+  const now = Date.now();
+  const bought = queue.filter((q) => q.bought && q.status !== "SKIPPED");
+  const day = bought.filter((q) => now - (q.boughtAt || 0) < 24 * 3600 * 1000).length;
+  const hour = bought.filter((q) => now - (q.boughtAt || 0) < 3600 * 1000).length;
+  if (day >= MAX_DAY) return { ok: false, reason: `daily cap ${MAX_DAY}/24h reached` };
+  if (hour >= MAX_HOUR) return { ok: false, reason: `hourly cap ${MAX_HOUR}/h reached` };
+  if (bought.length >= MAX_TOTAL) return { ok: false, reason: `total cap ${MAX_TOTAL} reached` };
+  return { ok: true };
+}
+
 interface QueuedCallout {
   mint: string;
   symbol: string;
@@ -49,6 +70,7 @@ interface QueuedCallout {
   calloutId?: string;
   safety?: SafetyVerdict;
   bought?: boolean;
+  boughtAt?: number;
 }
 
 function loadQueue(): QueuedCallout[] {
@@ -140,7 +162,9 @@ async function scan() {
                 thesis: "Fresh launch from a proven dev — catching it early.",
               });
               // SAFETY GATE FIRST: scan the mint; DANGER never reaches buy/post
+              // RISK RULE (surgical): auto-buy ONLY on PASS. WARN = alert founder, no auto-spend.
               let safe = false;
+              let warnNote = "";
               try {
                 const v: SafetyVerdict = await scanMint(mint);
                 queue[queue.length - 1].safety = v;
@@ -150,18 +174,37 @@ async function scan() {
                   saveQueue(queue);
                   continue;
                 }
+                if (v.verdict === "WARN") {
+                  warnNote = `WARN ${v.score} (${v.flags.join(", ")})`;
+                  queue[queue.length - 1].status = "NEEDS_BUY"; // human review
+                  saveQueue(queue);
+                  console.log(`[callout-queue] 🟡 ${mint.slice(0, 8)} ${v.verdict} ${v.score} — no auto-buy (founder review)`);
+                  alertFounder(
+                    `🟡 WARN-flagged launch (score ${v.score}: ${v.flags.join(", ")})\n\nmint: ${mint}\nhttps://pump.fun/coin/${mint}\n\nNot auto-buying (surgical rule). Say "buy" if you want it anyway.`
+                  );
+                  continue;
+                }
                 safe = true;
                 console.log(`[callout-queue] 🛡️ ${mint.slice(0, 8)} ${v.verdict} score ${v.score} ${v.flags.length ? "(" + v.flags.join(", ") + ")" : "clean"}`);
               } catch { console.log(`[callout-queue] ⚠️ safety scan failed for ${mint.slice(0, 8)} — proceeding (manual review)`); safe = true; }
 
               // AUTO-BUY: $1 via the browser session (the callout gate)
               if (safe) {
+                // RISK BUDGET CHECK before any spend
+                const budget = withinBudget(queue);
+                if (!budget.ok) {
+                  console.log(`[callout-queue] 🛑 budget guard: ${budget.reason} — ${mint.slice(0, 8)} queued as NEEDS_BUY (no auto-spend)`);
+                  queue[queue.length - 1].status = "NEEDS_BUY";
+                  saveQueue(queue);
+                  continue;
+                }
                 try {
                   console.log(`[callout-queue] 💰 auto-buy $1 of ${mint.slice(0, 8)}...`);
                   const buy = execSync(`node src/auto-buy.mjs ${mint} 1`, { encoding: "utf8", timeout: 120000, windowsHide: true, cwd: process.cwd() });
                   console.log(`[callout-queue] ✅ auto-buy done: ${buy.split("\n").filter(l => l.trim()).slice(-3).join(" | ")}`);
                   queue[queue.length - 1].status = "READY";
                   queue[queue.length - 1].bought = true;
+                  queue[queue.length - 1].boughtAt = Date.now();
                   saveQueue(queue);
                   // AUTO-POST the callout
                   try {
