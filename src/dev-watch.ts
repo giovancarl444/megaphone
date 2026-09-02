@@ -186,7 +186,7 @@ export async function pollOnce(readOnly = false): Promise<{ scanned: number; new
   const wallets = await loadDevWallets();
   let scanned = 0, newLaunches = 0;
   for (const w of wallets) {
-    const sigs = await getSignatures(25, w);
+    const sigs = (await getSignatures(25, w)) || [];
     scanned += sigs.length;
     for (const s of sigs) {
       const key = `${w}:${s.sig}`;
