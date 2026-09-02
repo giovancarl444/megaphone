@@ -115,22 +115,10 @@ async function rpc(method: string, params: any): Promise<any> {
 // paper-scalp / resolve-loop / score). Primary: pump.fun public GET /coins
 // (usd_market_cap, no auth, no CF cookie needed). Fallback: on-chain bonding
 // curve read (chain-native, CF-proof) so the watcher still works if the API blips.
+// NOTE: GMGN token-info `liquidity` is the curve's SOL-side pool value, NOT the
+// token market cap — it stays ~flat while mc swings. Never use it as mc.
 async function mcUsd(mint: string): Promise<number> {
-  // 1) GMGN token info — reliable, USD market cap direct (we hold the API key)
-  try {
-    const { execSync } = await import("node:child_process");
-    // Windows-safe: no /dev/null redirect (cmd.exe can't see it). Capture stderr via try/catch.
-    const out = execSync(
-      `gmgn-cli token info --chain sol --address ${mint}`,
-      { encoding: "utf8", timeout: 8000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] },
-    );
-    const j = JSON.parse(out);
-    // GMGN token info: no direct market_cap; for pump.fun bonding-curve coins
-    // the full supply is in the curve, so liquidity(USD) ≈ market cap.
-    const usd = Number(j?.liquidity ?? 0);
-    if (usd > 0) return Math.round(usd);
-  } catch { /* fall through */ }
-  // 2) pump.fun public read (usd_market_cap is the USD field; market_cap is SOL)
+  // 1) pump.fun public read (usd_market_cap is the canonical USD mc)
   try {
     const res = await fetch(`https://frontend-api-v3.pump.fun/coins/${mint}`, {
       headers: { Accept: "application/json" },
@@ -141,7 +129,7 @@ async function mcUsd(mint: string): Promise<number> {
       if (usd > 0) return Math.round(usd);
     }
   } catch { /* fall through to chain */ }
-  // 3) on-chain fallback: read the pump.fun bonding-curve account.
+  // 2) on-chain fallback: read the pump.fun bonding-curve account.
   try {
     const PROG = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
     const { PublicKey } = await import("@solana/web3.js");
