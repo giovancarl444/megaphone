@@ -16,6 +16,7 @@
 import { promises as fs, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
+import { scanMint, type SafetyVerdict } from "./token-safety.js";
 
 const FOUNDER_DM = "telegram:1915394365";
 
@@ -46,6 +47,7 @@ interface QueuedCallout {
   thesis?: string;
   postedAt?: number;
   calloutId?: string;
+  safety?: SafetyVerdict;
 }
 
 function loadQueue(): QueuedCallout[] {
@@ -142,6 +144,17 @@ async function scan() {
                 `mint: ${mint}\npump.fun: https://pump.fun/coin/${mint}\n\n` +
                 `Buy ~$1 of this coin to unlock the callout → I'll auto-post it once you confirm.`
               );
+              // SAFETY GATE: auto-scan the mint; DANGER callouts never reach the queue
+              try {
+                const v: SafetyVerdict = await scanMint(mint);
+                queue[queue.length - 1].safety = v;
+                if (v.verdict === "DANGER") {
+                  queue[queue.length - 1].status = "SKIPPED";
+                  console.log(`[callout-queue] ⛔ ${mint.slice(0, 8)} DANGER (${v.flags.join(", ")}) — auto-skipped`);
+                  continue;
+                }
+                console.log(`[callout-queue] 🛡️ ${mint.slice(0, 8)} ${v.verdict} score ${v.score} ${v.flags.length ? "(" + v.flags.join(", ") + ")" : "clean"}`);
+              } catch { console.log(`[callout-queue] ⚠️ safety scan failed for ${mint.slice(0, 8)} — proceeding (manual review)`); }
               found++;
             }
           }
