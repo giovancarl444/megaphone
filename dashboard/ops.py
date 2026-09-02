@@ -84,6 +84,13 @@ def state():
     copy_alive = bool(lock_pid(COPY_DIR / "copy-watch.lock"))
     dev_alive = bool(lock_pid(DEV_DIR / "dev-watch.lock"))
 
+    # whales: latest snapshot from whale_tracker (whales.json)
+    whales = load(MEG / ".megaphone" / "whales.json") or {}
+    whale_rows = [{"name": (w.get("name") or w["address"][:10])[:20], "addr": (w.get("address") or "")[:12],
+                   "pnl30": w.get("pnl30d") or 0, "pnl7": w.get("pnl7d") or 0,
+                   "wr": w.get("wr30d"), "x": (w.get("x") or "").replace("https://x.com/", "@")}
+                  for w in (whales.get("whales") or [])[:10]]
+
     # recent events (merged, sorted by time desc)
     events = []
     for t in (copy_book or []):
@@ -106,6 +113,7 @@ def state():
         "devs_top": (watchlist.get("devs") or [])[:10],
         "events": events[:15],
         "callouts": callout_summary(),
+        "whales": {"ts": whales.get("ts") or 0, "count": whales.get("count") or 0, "rows": whale_rows},
         "ideas": [
             {"name": "Callout Auto-Poster", "status": "⏳ GATE", "desc": "Post engine signals as pump.fun callouts (POST /callout/create VERIFIED). Needs ≥$1 token holdings in session wallet.", "owner": "founder buy $5"},
             {"name": "Token Launch + Blast", "status": "💡 IDEA", "desc": "Bundle-launch coins (pumpdev /api/create-bundle) + volume/bump to top. Reddit-validated $300-1K/launch claim. Risk: rug-rep.", "owner": "later"},
@@ -163,6 +171,7 @@ td{padding:4px 6px;border-bottom:1px solid #161e2a}
 <div class="grid">
   <div class="card"><h2>🛰 Dev Watchlist (top 10)</h2><table id="devs"></table></div>
   <div class="card"><h2>📢 Your Callouts <span id="callout-count" class="dim"></span></h2><table id="callouts"></table></div>
+  <div class="card"><h2>🐋 Top Whales <span id="whale-count" class="dim"></span></h2><table id="whales"></table></div>
 </div>
 <div class="grid">
   <div class="card"><h2>📡 Recent Events</h2><div id="events"></div></div>
@@ -208,6 +217,12 @@ async function tick(){
       const x=parseFloat(r.x)||1; const pk=parseFloat(r.peak)||1;
       return `<tr><td><b>${r.symbol}</b></td><td>$${(r.mc||0).toLocaleString()}</td><td class="${x>=1?'grn':'red'}">${x.toFixed(2)}x</td><td class="${pk>=1?'grn':'red'}">${pk.toFixed(2)}x</td><td class="dim">${r.views||0}</td><td class="dim">${r.thesis}</td></tr>`;
     }).join('')||'<div class="dim">no callouts yet</div>';
+    // whales
+    const wh=s.whales||{};
+    $('whale-count').textContent=`(${wh.count||0} tracked · snap ${wh.ts?new Date(wh.ts).toTimeString().slice(0,8):'?'})`;
+    $('whales').innerHTML='<tr><th>name</th><th>pnl 30d</th><th>pnl 7d</th><th>wr</th><th>x</th></tr>'+(wh.rows||[]).map(w=>{
+      return `<tr><td><b>${w.name}</b></td><td class="${w.pnl30>=0?'grn':'red'}">$${Math.abs(w.pnl30).toLocaleString()}</td><td class="${w.pnl7>=0?'grn':'red'}">$${Math.abs(w.pnl7).toLocaleString()}</td><td class="dim">${w.wr!=null?w.wr+'%':'-'}</td><td><a href="https://x.com/${(w.x||'').replace('@','')}" target="_blank" class="dim">${w.x||''}</a></td></tr>`;
+    }).join('')||'<div class="dim">no whale snapshot yet (cron 07:00)</div>';
   }catch(e){$('ts').textContent='ERR '+e.message}
 }
 function rows(ts){
