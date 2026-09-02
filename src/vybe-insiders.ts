@@ -30,7 +30,7 @@ interface Insider {
 
 export async function fetchTopTraders(resolution: "1d" | "7d" | "30d" = "7d", limit = 200): Promise<any[]> {
   if (!KEY) throw new Error("VYBE_API_KEY not set — get free key at https://vybe.fyi/api-pricing");
-  const url = `${BASE}?resolution=${resolution}&limit=${limit}`;
+  const url = `${BASE}?resolution=${resolution}&limit=${limit}&sortByDesc=realizedPnlUsd`;
   const res = await fetch(url, { headers: { "x-api-key": KEY, "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(20000) });
   if (!res.ok) {
     const t = await res.text();
@@ -68,7 +68,7 @@ async function main() {
     return {
       address: t?.accountAddress ?? "",
       realizedPnlUsd: Math.round(Number(m.realizedPnlUsd ?? 0)),
-      winRate: m.winRate != null ? Math.round(Number(m.winRate) * 1000) / 10 : null,
+      winRate: m.winRate != null ? Math.round(Number(m.winRate) * 10) / 10 : null, // already % (0-100)
       totalVolumeUsd: m.totalVolumeUsd != null ? Math.round(Number(m.totalVolumeUsd)) : null,
       tradeCount: m.tradeCount != null ? Number(m.tradeCount) : null,
       bestToken: best?.symbol || best?.tokenAddress || null,
