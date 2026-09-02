@@ -6,9 +6,17 @@ Run:  /c/Python311/python.exe -m uvicorn ops:app --host 127.0.0.1 --port 8080
 import json, os, time
 from pathlib import Path
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+# CORS wide-open for Lovable/dev consumers — read-only endpoints only
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
 
 MEG = Path(r"D:\megaphone")
 COPY_DIR = MEG / ".copy1"
@@ -73,6 +81,42 @@ def callout_summary():
     return {"total": last.get("total") or 0, "active": last.get("active") or 0,
             "resolved": last.get("resolved") or 0, "best": last.get("best") or 0,
             "totalViews": last.get("totalViews") or 0, "rows": rows}
+
+@app.get("/api/whales")
+def api_whales():
+    """Public whale leaderboard for Lovable/product builds."""
+    whales = load(MEG / ".megaphone" / "whales.json") or {}
+    rows = [{"name": (w.get("name") or w["address"][:10])[:30], "address": w.get("address"),
+             "x": (w.get("x") or "").replace("https://x.com/", ""),
+             "labels": w.get("labels", []),
+             "pnl30d": w.get("pnl30d") or 0, "pnl7d": w.get("pnl7d") or 0,
+             "winRate30d": w.get("wr30d"), "winRate7d": w.get("wr7d"),
+             "volume30d": w.get("vol30d") or 0, "volume7d": w.get("vol7d") or 0,
+             "trades30d": w.get("trades30d") or 0, "tokens30d": w.get("tokens30d") or 0}
+            for w in (whales.get("whales") or [])]
+    return JSONResponse({"ts": whales.get("ts"), "count": len(rows), "whales": rows})
+
+@app.get("/api/insiders")
+def api_insiders():
+    """Public insider candidates (copyability-ranked)."""
+    ins = load(MEG / ".megaphone" / "insiders.json") or {}
+    rows = [{"address": i.get("address"), "pnl": i.get("realizedPnlUsd"),
+             "winRate": i.get("winRate"), "volume": i.get("totalVolumeUsd"),
+             "trades": i.get("tradeCount"), "bestToken": i.get("bestToken"),
+             "label": i.get("label"), "score": i.get("score")}
+            for i in (ins.get("insiders") or [])]
+    return JSONResponse({"ts": ins.get("fetchedAt"), "resolution": ins.get("resolution"),
+                         "count": len(rows), "insiders": rows})
+
+@app.get("/api/callouts/public")
+def api_callouts_public():
+    """Public callout track record (proven calls only) — the proof page data."""
+    calls = load(MEG / ".megaphone" / "callouts.json") or []
+    rows = [{"symbol": c.get("symbol"), "mint": c.get("mint"), "calledMc": c.get("calledMc"),
+             "multiple": c.get("multiple"), "outcome": c.get("outcome"), "ts": c.get("ts")}
+            for c in (calls or []) if c.get("outcome") in ("WIN", "LOSS", "OPEN")]
+    return JSONResponse({"count": len(rows), "calls": rows[-50:]})
+
 
 @app.get("/api/state")
 def state():
