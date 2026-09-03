@@ -419,6 +419,15 @@ export async function resolveTrades(): Promise<{ closed: number; wins: number; s
         t.pendingExit = undefined;
         continue;
       }
+      // FROZEN-VALUE FILL GUARD: if the fill read equals the trigger read exactly
+      // (stuck feed) and differs wildly from the trade's real range, don't fill.
+      const sameAsTrigger = t.triggerMc > 0 && Math.abs(mc - t.triggerMc) < 1;
+      const absurdForTrade = mc > t.ourMc * 3 || mc < t.ourMc * 0.3;
+      if (sameAsTrigger && absurdForTrade && t.pendingExit.side === "WIN") {
+        console.log(`[cupsey-watch] 🧊 frozen fill guard: ${t.mint.slice(0, 8)} fill $${mc} == trigger $${t.triggerMc} (frozen) — pendingExit cleared, no WIN booked`);
+        t.pendingExit = undefined;
+        continue;
+      }
       t.fillMc = Math.round(mc);
       t.exitMc = Math.round(mc);
       let side = t.pendingExit.side;
@@ -430,6 +439,7 @@ export async function resolveTrades(): Promise<{ closed: number; wins: number; s
         else { t.pendingExit = undefined; continue; } // neither: keep OPEN, wait
       }
       t.outcome = side; // WIN | STOP | HISSELL
+      t.resolvedAt = Date.now(); // ← BUGFIX: live fill never stamped resolution time
       // HONEST pnl: measured from OUR entry to the real fill, in USD.
       // WIN target is +100% (fillMc >= 2x ourMc). STOP/HISSELL book the true
       // fill pnl (can be + or -, e.g. he dumped at -50 → we log -50).
@@ -473,12 +483,19 @@ export async function resolveTrades(): Promise<{ closed: number; wins: number; s
     }
 
     // detect trigger this poll (don't fill yet — next poll fills)
-    // GLITCH GUARD: a single mc read >5x the last recorded sample is almost
+    // GLITCH GUARD 1: a single mc read >5x the last recorded sample is almost
     // certainly a bad feed (cross-coin cache, stale response). Don't trigger
     // exits on it — log and skip so the book stays honest.
     const prev = (t.path || []).length ? (t.path[t.path.length - 1] as any).mc : t.ourMc;
     if (prev > 0 && mc > prev * 5) {
       console.log(`[cupsey-watch] ⚠️ mc glitch guard: ${t.mint.slice(0, 8)} read $${mc} vs prev $${prev} — skipped (no trigger)`);
+      continue;
+    }
+    // GLITCH GUARD 2: stuck-value detector — 3+ IDENTICAL consecutive reads =
+    // frozen/cached feed (real mc moves every poll). Never trigger on a frozen value.
+    const frozen = (t.path || []).slice(-2).every((s: any) => s.mc === mc) && mc === prev && mc !== t.ourMc;
+    if (frozen && (mc >= t.targetMc || mc <= t.stopMc)) {
+      console.log(`[cupsey-watch] 🧊 frozen-mc guard: ${t.mint.slice(0, 8)} stuck at $${mc} (3 identical reads) — no trigger on frozen value`);
       continue;
     }
     if (mc >= t.targetMc) {
@@ -602,9 +619,25 @@ async function main() {
       const path = t.path || [];
       // PATH IS THE TRUTH. pendingExit is only trusted if the recorded path
       // corroborates it — a stale flag from a glitch read must never book a WIN.
-      const crossedTarget = path.some((s: any) => s.mc >= t.targetMc);
-      const crossedStop = path.some((s: any) => s.mc <= t.stopMc);
+      // FROZEN-VALUE SANITY: ignore path samples that are wildly outside the
+      // trade's real range (stuck feed reads like a shared $16K glitch) — a
+      // legitimate 5x move must be corroborated by non-identical neighbors.
+      const saneSamples = path.filter((s: any) => s.mc > t.stopMc * 0.5 && s.mc < t.targetMc * 3);
+      const pathForDecisions = saneSamples.length >= 3 ? saneSamples : path;
+      const crossedTarget = pathForDecisions.some((s: any) => s.mc >= t.targetMc);
+      const crossedStop = pathForDecisions.some((s: any) => s.mc <= t.stopMc);
       if (crossedTarget) {
+        // require the crossing sample to be corroborated (not a single isolated spike)
+        const spikes = path.filter((s: any) => s.mc >= t.targetMc);
+        const corroborated = spikes.some((s: any, i: number) => {
+          const n = path.filter((x: any) => Math.abs(x.t - s.t) < 120000 && x.mc >= t.targetMc).length;
+          return n >= 2;
+        });
+        if (!corroborated && spikes.length <= 2) {
+          console.log(`[cupsey-watch] 🧊 reconciliation guard: ${t.mint.slice(0, 8)} target-crossing samples look frozen/isolated — staying OPEN`);
+          t.pendingExit = undefined; changed = true;
+          continue;
+        }
         t.outcome = "WIN"; t.exitMc = t.triggerMc || t.targetMc; t.pnlPct = 100;
         t.pendingExit = undefined; t.resolvedAt = Date.now(); changed = true;
         console.log(`[cupsey-watch] 🔧 reconciliation: ${t.mint.slice(0, 8)} → WIN (path crossed ${t.targetMc})`);
