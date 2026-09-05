@@ -16,7 +16,7 @@
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import * as api from "./api-rail";
+
 
 const DATA_DIR = path.join(process.cwd(), ".megaphone");
 const LEDGER_FILE = path.join(DATA_DIR, "gmgn-calls.json");
@@ -25,10 +25,8 @@ const LOCK_FILE = path.join(DATA_DIR, "gmgn-watch.lock");
 const FOUNDER_DM = "telegram:1915394365";
 
 const POLL_MS = 90_000;
-const BUY_SOL = Number(process.env.GMGN_BUY_SOL || 0.014); // ~$1.45 @ ~$103/SOL
 const MAX_PER_HOUR = Number(process.env.GMGN_MAX_HOUR || 2);
 const MAX_PER_DAY = Number(process.env.GMGN_MAX_DAY || 6);
-const MIN_SOL_TO_RUN = 0.05; // pre-flight floor (~$5)
 
 interface CallRecord {
   mint: string; symbol: string; mc: number; ageMin: number; score: number;
@@ -47,6 +45,33 @@ function alertFounder(msg: string) {
     writeFileSync(tmp, msg, "utf8");
     execSync(`hermes send --to ${FOUNDER_DM} -f "${tmp}"`, { timeout: 15000, windowsHide: true, stdio: "ignore" });
   } catch (e) { console.error("alert fail:", (e as Error).message.slice(0, 100)); }
+}
+
+/** BROWSER RAIL: buy $1.2 as drew_patel through the live CDP session. */
+async function browserBuy(mint: string): Promise<boolean> {
+  try {
+    const out = execSync(`node src/auto-buy.mjs ${mint} 1.2`, {
+      encoding: "utf8", timeout: 150000, windowsHide: true, cwd: process.cwd(),
+    });
+    return /DONE|BALANCE MOVED|success/i.test(out);
+  } catch (e) {
+    console.log(`[gmgn] buy err: ${(e as Error).message.slice(0, 120)}`);
+    return false;
+  }
+}
+
+/** BROWSER RAIL: post callout as drew_patel through the live session. */
+async function browserPost(mint: string, thesis: string): Promise<boolean> {
+  try {
+    const out = execSync(
+      `node node_modules/tsx/dist/cli.mjs src/callout-poster.ts ${mint} "${thesis.replace(/"/g, "'")}"`,
+      { encoding: "utf8", timeout: 90000, windowsHide: true, cwd: process.cwd() },
+    );
+    return /201|calloutId|posted|success|DUPLICATE/i.test(out);
+  } catch (e) {
+    console.log(`[gmgn] post err: ${(e as Error).message.slice(0, 120)}`);
+    return false;
+  }
 }
 
 function gmgnTrending(interval: string, minMc: number, maxMc: number): any[] {
@@ -199,12 +224,8 @@ async function scanOnce(dryRun: boolean) {
 
   if (hourUsed >= MAX_PER_HOUR) { console.log(`[gmgn] hourly cap ${MAX_PER_HOUR}`); return; }
 
-  // pre-flight SOL balance
-  const bal = await api.apiSolBalance();
-  if (bal < MIN_SOL_TO_RUN) {
-    alertFounder(`⛽ GMGN engine: pumpdev wallet at ${bal.toFixed(3)} SOL — below ${MIN_SOL_TO_RUN} floor. Top up 6xxWhUvg9szw5BmnmeNbEBd3Rv9hDBcAX6AHLbapLDBa to keep the loop firing.`);
-    return;
-  }
+  // NOTE: buys happen as drew_patel in the browser session — auto-buy.mjs has
+  // its own pre-flight balance check against the live session balance.
 
   for (const { t, score, tier } of cands) {
     if (hourUsed >= MAX_PER_HOUR) break;
@@ -221,9 +242,9 @@ async function scanOnce(dryRun: boolean) {
     ledger.push(rec); saveJSON(LEDGER_FILE, ledger);
     console.log(`[gmgn] 🎯 ${tier} ${rec.symbol} score ${score} mc $${rec.mc.toLocaleString()} — "${thesis}"`);
 
-    console.log(`[gmgn] 💰 API buy ${BUY_SOL} SOL...`);
-    const sig = await api.apiBuy(mint, BUY_SOL);
-    if (!sig) {
+    console.log(`[gmgn] 💰 buy $1.2 as drew_patel (browser rail)...`);
+    const bought = await browserBuy(mint);
+    if (!bought) {
       rec.status = "failed"; rec.detail = "buy failed"; saveJSON(LEDGER_FILE, ledger);
       alertFounder(`⚠️ ${tier.toUpperCase()} buy FAILED for ${rec.symbol} (${mint.slice(0, 8)}…) — ${thesis}`);
       continue;
@@ -232,14 +253,14 @@ async function scanOnce(dryRun: boolean) {
     hourUsed++; dayUsed++;
 
     console.log(`[gmgn] 📢 posting "${thesis}"`);
-    const post = await api.apiPostCallout(mint, thesis, { waitMs: 15000 });
-    if (post.ok) {
-      rec.status = "posted"; rec.detail = post.detail; saveJSON(LEDGER_FILE, ledger);
-      console.log(`[gmgn] 🎉 CALLOUT POSTED (${post.detail}): ${rec.symbol}`);
+    const post = await browserPost(mint, thesis);
+    if (post) {
+      rec.status = "posted"; rec.detail = "ok"; saveJSON(LEDGER_FILE, ledger);
+      console.log(`[gmgn] 🎉 CALLOUT POSTED: ${rec.symbol}`);
       alertFounder(`🎉 AUTO-CALLOUT [${tier.toUpperCase()}]: ${rec.symbol} — "${thesis}"\nhttps://pump.fun/coin/${mint}\n(score ${score}, mc $${rec.mc.toLocaleString()}, ${rec.ageMin}m old)`);
     } else {
-      rec.status = "failed"; rec.detail = post.detail; saveJSON(LEDGER_FILE, ledger);
-      alertFounder(`💰 Bought ${rec.symbol} (${tier}) but post failed: ${post.detail}\nManual? https://pump.fun/coin/${mint}`);
+      rec.status = "failed"; rec.detail = "post failed"; saveJSON(LEDGER_FILE, ledger);
+      alertFounder(`💰 Bought ${rec.symbol} (${tier}) but post failed — manual? https://pump.fun/coin/${mint}`);
     }
   }
 }
@@ -256,7 +277,7 @@ async function main() {
   } catch {}
   writeFileSync(LOCK_FILE, String(process.pid), "utf8");
   process.on("exit", () => { try { require("fs").unlinkSync(LOCK_FILE); } catch {} });
-  console.log(`[gmgn] looping every ${POLL_MS / 1000}s | caps ${MAX_PER_HOUR}/h ${MAX_PER_DAY}/d | buy ${BUY_SOL} SOL | floor ${MIN_SOL_TO_RUN} SOL`);
+  console.log(`[gmgn] looping every ${POLL_MS / 1000}s | caps ${MAX_PER_HOUR}/h ${MAX_PER_DAY}/d | buy $1.2 as drew_patel`);
   const loop = async () => { try { await scanOnce(false); } catch (e) { console.error("[gmgn] loop err:", (e as Error).message); } };
   await loop();
   setInterval(loop, POLL_MS);
