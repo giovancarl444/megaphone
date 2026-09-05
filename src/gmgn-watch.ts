@@ -98,13 +98,19 @@ function safetyOk(t: any): { ok: boolean; why?: string } {
   return { ok: true };
 }
 
-/** Score micro tier ($3K-150K): young + buy pressure + momentum = "early" call. */
+/** True only for coins still on the pump.fun bonding curve (buyable via $1 UI buy). */
+function onBondingCurve(t: any): boolean {
+  return (t.launchpad_status === 0 || t.exchange === "pump") && (t.launchpad_platform || "") === "Pump.fun";
+}
+
+/** Score micro tier ($3K-60K, bonding curve only): young + buy pressure + momentum. */
 function scoreMicro(t: any, nowMs: number): number {
+  if (!onBondingCurve(t)) return 0;
   const createdMs = (t.creation_timestamp || nowMs / 1000) * 1000; // GMGN uses epoch SECONDS
   const ageMs = nowMs - createdMs;
   if (ageMs < 2 * 60_000 || ageMs > 6 * 3600_000) return 0;
   const mc = t.market_cap || 0;
-  if (mc < 3000 || mc > 150_000) return 0;
+  if (mc < 3000 || mc > 60_000) return 0; // 60K < ~69K graduation
   let s = 50;
   if (ageMs < 60 * 60_000) s += 20; else if (ageMs < 3 * 3600_000) s += 10; else s += 5;
   const buys = t.buys || 0, sells = t.sells || 0, swaps = t.swaps || 0;
@@ -195,9 +201,10 @@ async function scanOnce(dryRun: boolean) {
   let hourUsed = ledger.filter((c) => now - c.ts < 3600_000 && ["posted", "bought"].includes(c.status)).length;
   let dayUsed = ledger.filter((c) => now - c.ts < 86400_000 && ["posted", "bought"].includes(c.status)).length;
 
-  // fetch both tiers
-  const micro = gmgnTrending("1m", 3000, 150_000);
-  const liquid = gmgnTrending("1h", 5_000_000, 100_000_000);
+  // fetch both tiers (liquid gated behind env flag until graduated-buy proven)
+  const LIQUID_ENABLED = process.env.GMGN_LIQUID === "1";
+  const micro = gmgnTrending("1m", 3000, 60_000);
+  const liquid = LIQUID_ENABLED ? gmgnTrending("1h", 5_000_000, 100_000_000) : [];
   console.log(`[gmgn] fetched micro ${micro.length}, liquid ${liquid.length} (hour ${hourUsed}/${MAX_PER_HOUR}, day ${dayUsed}/${MAX_PER_DAY})`);
 
   const cands: { t: any; score: number; tier: "micro" | "liquid" }[] = [];
@@ -206,10 +213,12 @@ async function scanOnce(dryRun: boolean) {
     const s = scoreMicro(t, now);
     if (s >= 60) { const safe = safetyOk(t); if (safe.ok) cands.push({ t, score: s, tier: "micro" }); else console.log(`[gmgn] ⛔ micro ${(t.symbol||'').slice(0,10)} safety: ${safe.why}`); }
   }
-  for (const t of liquid) {
-    if (seen.includes(t.address)) continue;
-    const s = scoreLiquid(t);
-    if (s >= 65) { const safe = safetyOk(t); if (safe.ok) cands.push({ t, score: s, tier: "liquid" }); else console.log(`[gmgn] ⛔ liquid ${(t.symbol||'').slice(0,10)} safety: ${safe.why}`); }
+  if (LIQUID_ENABLED) {
+    for (const t of liquid) {
+      if (seen.includes(t.address)) continue;
+      const s = scoreLiquid(t);
+      if (s >= 65) { const safe = safetyOk(t); if (safe.ok) cands.push({ t, score: s, tier: "liquid" }); else console.log(`[gmgn] ⛔ liquid ${(t.symbol||'').slice(0,10)} safety: ${safe.why}`); }
+    }
   }
   cands.sort((a, b) => b.score - a.score);
 
