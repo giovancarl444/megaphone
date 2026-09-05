@@ -49,6 +49,7 @@ function loadToken(): string {
 const PUMPFUN_TOKEN = loadToken();
 
 const SEEN_FILE = path.join(DATA_DIR, "cupsy-seen.json");
+const STATUS_FILE = path.join(DATA_DIR, "cupsy-status.json");
 const POLL_MS = Number(process.env.CUPSY_POLL_MS ?? 60_000);
 const LIMIT = Number(process.env.CUPSY_LIMIT ?? 200);
 
@@ -160,7 +161,18 @@ export async function pollOnce(page: any, token: string): Promise<{ scanned: num
     }
   }
   saveSeen(seen);
+  // record last-poll status for the heartbeat (watcher liveness + last signal age)
+  const status = { lastPoll: Date.now(), lastSignal: alerts > 0 ? Date.now() : (loadStatus().lastSignal ?? null) };
+  fs.writeFile(STATUS_FILE, JSON.stringify(status), "utf8").catch(() => {});
   return { scanned, hits, alerts };
+}
+
+function loadStatus(): { lastPoll?: number; lastSignal?: number | null } {
+  try {
+    return JSON.parse(readFileSync(STATUS_FILE, "utf8"));
+  } catch {
+    return {};
+  }
 }
 
 async function main() {

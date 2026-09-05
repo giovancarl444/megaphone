@@ -1,6 +1,7 @@
 import puppeteer from "puppeteer";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { logCallout, markBroadcasted } from "./leaderboard";
 import { broadcastCallout } from "./broadcast";
 import { PUMPFUN_TOKEN } from "./config";
@@ -111,7 +112,7 @@ export async function mirrorLeaderboard(limit = 50): Promise<{ callers: number; 
 }
 
 // run: tsx src/leaderboard-mirror.ts
-if (import.meta.url.replace(/\\/g, "/").endsWith("/src/leaderboard-mirror.ts")) {
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   mirrorLeaderboard()
     .then((r) => process.exit(0))
     .catch((e) => {

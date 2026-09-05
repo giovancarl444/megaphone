@@ -1,4 +1,4 @@
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { execSync } from "node:child_process";
 import {
   resolveCallout,
@@ -99,9 +99,7 @@ async function postProof(c: Callout): Promise<void> {
 }
 
 // run: tsx src/resolve-loop.ts
-if (
-  fileURLToPath(import.meta.url).replace(/\\/g, "/").endsWith("/src/resolve-loop.ts")
-) {
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   resolveLoop()
     .then(() => process.exit(0))
     .catch((e) => {

@@ -1,6 +1,11 @@
 // peek-balance.mjs — FAST read-only balance peek (no navigation, no page reload)
 const list = await (await fetch("http://127.0.0.1:9223/json/list")).json();
-const page = list.find((t) => t.type === "page" && t.url.includes("pump.fun"));
+// prefer a responsive tab: try each pump.fun page, take first that answers
+let page = null;
+for (const t of list) {
+  if (t.type === "page" && t.url.includes("pump.fun") && !t.url.includes("/profile/")) { page = t; break; }
+}
+if (!page) page = list.find((t) => t.type === "page" && t.url.includes("pump.fun"));
 if (!page) { console.log(JSON.stringify({ balance: null })); process.exit(0); }
 const ws = new WebSocket(page.webSocketDebuggerUrl);
 let id = 0; const pend = new Map();

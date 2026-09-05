@@ -8,7 +8,7 @@
  *   - age of last signal (newest trade openedAt)
  * If watcher is dead at heartbeat time -> restart supervisor, say so explicitly.
  */
-import { readFileSync, existsSync, statSync, appendFileSync } from "node:fs";
+import { readFileSync, existsSync, statSync, writeFileSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { execSync, spawn } from "node:child_process";
 import { CALLOUT_CHAT } from "./config";
@@ -29,8 +29,22 @@ type SniperOutcome = "OPEN" | "WIN" | "STOP" | "COPYEXIT";
 interface Trade { outcome?: string; openedAt?: number; }
 
 function send(text: string) {
-  try { execSync(`hermes send --to ${CHAT} ${JSON.stringify(text)}`, { stdio: "ignore" }); }
-  catch (e) { console.error("[health] send failed:", (e as Error).message); }
+  const targets = [CHAT, "telegram:1915394365"];
+  for (const target of targets) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const tmp = path.join(DATA_DIR, `hb-${Date.now()}-${attempt}.txt`);
+      try { writeFileSync(tmp, text, "utf8"); } catch { continue; }
+      try {
+        execSync(`hermes send -t ${target} -f "${tmp}"`, { stdio: "ignore", timeout: 12000 });
+        try { unlinkSync(tmp); } catch {}
+        return;
+      } catch {
+        try { unlinkSync(tmp); } catch {}
+        if (attempt < 2) { try { execSync("ping -n 2 127.0.0.1 >nul 2>&1"); } catch {} }
+      }
+    }
+  }
+  console.error("[health] send failed after retries (all targets)");
 }
 
 function watcherAlive(): boolean {

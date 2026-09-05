@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { recentCallouts, logCallout, Callout } from "./leaderboard";
 import { fetchCoinNow } from "./whales";
 
@@ -121,7 +122,7 @@ export async function resolvePaperTrades(): Promise<{ wins: number; stops: numbe
 }
 
 // run: tsx src/paper-scalp.ts  -> open paper trades for top calls + resolve existing
-if (import.meta.url.replace(/\\/g, "/").endsWith("/src/paper-scalp.ts")) {
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   (async () => {
     const calls = await recentCallouts(500);
     const top = calls.filter((c) => (c.multiple ?? 0) >= 1.5).slice(0, 3);
