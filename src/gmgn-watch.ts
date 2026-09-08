@@ -86,16 +86,37 @@ function gmgnTrending(interval: string, minMc: number, maxMc: number): any[] {
   }
 }
 
-/** Safety: PASS only. Rug/honeypot/bundler/dev-hold flags kill the call. */
-function safetyOk(t: any): { ok: boolean; why?: string } {
+/** Safety: composite risk model. Untouchable = honeypot/wash/unrenounced.
+ *  Everything else stacks: strong buy pressure offsets bot/bundler noise
+ *  (snipers chase real runners on pump.fun); stacked red flags kill. */
+function safetyOk(t: any): { ok: boolean; why?: string; penalty?: number } {
+  // absolute killers — no exception
   if (t.is_honeypot) return { ok: false, why: "honeypot" };
-  if (!t.is_renounced && t.renounced_mint !== 1) return { ok: false, why: "mint not renounced" };
-  if ((t.bundler_rate || 0) > 0.3) return { ok: false, why: `bundler ${(t.bundler_rate * 100).toFixed(0)}%` };
-  if ((t.bot_degen_rate || 0) > 0.3) return { ok: false, why: `bots ${(t.bot_degen_rate * 100).toFixed(0)}%` };
-  if ((t.dev_team_hold_rate || 0) > 0.2) return { ok: false, why: `dev holds ${(t.dev_team_hold_rate * 100).toFixed(0)}%` };
-  if (t.creator_close) return { ok: false, why: "creator closed" };
   if (t.is_wash_trading) return { ok: false, why: "wash trading" };
-  return { ok: true };
+  if (!t.is_renounced && t.renounced_mint !== 1) return { ok: false, why: "mint not renounced" };
+
+  const bundler = t.bundler_rate || 0;
+  const bots = t.bot_degen_rate || 0;
+  const devHold = t.dev_team_hold_rate || 0;
+  const creatorOut = !!t.creator_close;
+  const buys = t.buys || 0, sells = t.sells || 0;
+  const ratio = sells > 0 ? buys / sells : buys > 0 ? 3 : 0;
+  const strongDemand = ratio >= 1.5 && buys >= 60;
+
+  let strikes = 0;
+  if (bundler > 0.45) strikes += 2; else if (bundler > 0.3) strikes += 1;
+  if (bots > 0.6) strikes += 2; else if (bots > 0.45) strikes += 1;
+  if (devHold > 0.25) strikes += 2; else if (devHold > 0.15) strikes += 1;
+  if (creatorOut && !strongDemand) strikes += 1;
+
+  // stacked red flags = junk; single flag with real demand = rideable
+  if (strikes >= 3 && !strongDemand) return { ok: false, why: `risk ${bundler > 0.3 ? "bundler " + (bundler * 100).toFixed(0) + "% " : ""}${bots > 0.45 ? "bots " + (bots * 100).toFixed(0) + "%" : ""}` };
+  if (strikes >= 4) return { ok: false, why: "stacked risk flags" };
+
+  // soft penalty scales with remaining risk
+  let penalty = strikes * 4;
+  if (creatorOut && !strongDemand) penalty += 3; // dev exited, community must carry
+  return { ok: true, penalty };
 }
 
 /** True only for coins still on the pump.fun bonding curve (buyable via $1 UI buy). */
@@ -211,13 +232,21 @@ async function scanOnce(dryRun: boolean) {
   for (const t of micro) {
     if (seen.includes(t.address)) continue;
     const s = scoreMicro(t, now);
-    if (s >= 60) { const safe = safetyOk(t); if (safe.ok) cands.push({ t, score: s, tier: "micro" }); else console.log(`[gmgn] ⛔ micro ${(t.symbol||'').slice(0,10)} safety: ${safe.why}`); }
+    if (s >= 60) {
+      const safe = safetyOk(t);
+      if (safe.ok) cands.push({ t, score: Math.max(0, s - (safe.penalty || 0)), tier: "micro" });
+      else console.log(`[gmgn] ⛔ micro ${(t.symbol||'').slice(0,10)} safety: ${safe.why}`);
+    }
   }
   if (LIQUID_ENABLED) {
     for (const t of liquid) {
       if (seen.includes(t.address)) continue;
       const s = scoreLiquid(t);
-      if (s >= 65) { const safe = safetyOk(t); if (safe.ok) cands.push({ t, score: s, tier: "liquid" }); else console.log(`[gmgn] ⛔ liquid ${(t.symbol||'').slice(0,10)} safety: ${safe.why}`); }
+      if (s >= 65) {
+        const safe = safetyOk(t);
+        if (safe.ok) cands.push({ t, score: Math.max(0, s - (safe.penalty || 0)), tier: "liquid" });
+        else console.log(`[gmgn] ⛔ liquid ${(t.symbol||'').slice(0,10)} safety: ${safe.why}`);
+      }
     }
   }
   cands.sort((a, b) => b.score - a.score);
