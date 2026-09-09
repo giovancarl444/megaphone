@@ -31,6 +31,7 @@ const MAX_PER_DAY = Number(process.env.GMGN_MAX_DAY || 6);
 interface CallRecord {
   mint: string; symbol: string; mc: number; ageMin: number; score: number;
   thesis: string; tier: "micro" | "liquid"; status: string; ts: number; detail?: string;
+  exitAt?: number; exitPnl?: number; exitReason?: string;
 }
 
 function loadJSON<T>(f: string, d: T): T { try { return JSON.parse(readFileSync(f, "utf8")); } catch { return d; } }
@@ -71,6 +72,65 @@ async function browserPost(mint: string, thesis: string): Promise<boolean> {
   } catch (e) {
     console.log(`[gmgn] post err: ${(e as Error).message.slice(0, 120)}`);
     return false;
+  }
+}
+
+/** BROWSER RAIL: sell full position as drew_patel (profit/stop rail). */
+async function browserSell(mint: string): Promise<boolean> {
+  try {
+    const out = execSync(`node src/auto-sell.mjs ${mint}`, {
+      encoding: "utf8", timeout: 150000, windowsHide: true, cwd: process.cwd(),
+    });
+    return /SELL_DONE|success|sold/i.test(out);
+  } catch (e) {
+    console.log(`[gmgn] sell err: ${(e as Error).message.slice(0, 120)}`);
+    return false;
+  }
+}
+
+/** Live USD market cap via pump.fun public API (source of truth for exits). */
+function liveMcUsd(mint: string): number | null {
+  try {
+    const out = execSync(
+      `curl -s --max-time 15 "https://frontend-api-v3.pump.fun/coins/${mint}" -H "Accept: application/json"`,
+      { encoding: "utf8", timeout: 20000, windowsHide: true },
+    );
+    const j = JSON.parse(out);
+    const usd = j?.usd_market_cap;
+    const sol = j?.market_cap;
+    // usd_market_cap is the real USD value; fall back to SOL field * ~101 if absent
+    return usd != null ? Number(usd) : sol != null ? Number(sol) * 101 : null;
+  } catch { return null; }
+}
+
+/** SCALP-EXIT BRAIN: protect fresh callouts, bank aged winners, cut aged losers.
+ *  Rules (founder-approved "callouts + scalping" hybrid):
+ *   - age < 6h:  never touch (callout is gathering views)
+ *   - age >= 6h && pnl >= +50%: SELL (take profit, recycle fuel)
+ *   - age >= 24h && pnl <= -40%: SELL (cut, recycle)
+ *   Called coins only; every sell frees capital for the next callout. */
+async function exitCheck(ledger: CallRecord[]): Promise<void> {
+  const now = Date.now();
+  for (const rec of ledger) {
+    if (!["posted", "bought"].includes(rec.status)) continue;
+    if (rec.exitAt) continue; // already exited
+    const ageH = (now - rec.ts) / 3600_000;
+    if (ageH < 6) continue; // protected window — callout lives
+    const cur = liveMcUsd(rec.mint);
+    if (cur == null || cur <= 0 || rec.mc <= 0) continue;
+    const pnl = cur / rec.mc - 1;
+    const takeProfit = pnl >= 0.5;
+    const stopLoss = ageH >= 24 && pnl <= -0.4;
+    if (!takeProfit && !stopLoss) continue;
+    console.log(`[gmgn] 🎯 EXIT ${rec.symbol}: pnl ${(pnl * 100).toFixed(0)}% (${cur.toLocaleString()} vs entry ${rec.mc.toLocaleString()}, ${ageH.toFixed(1)}h) — selling`);
+    const sold = await browserSell(rec.mint);
+    if (sold) {
+      rec.status = "sold"; rec.exitAt = now; rec.exitPnl = pnl; rec.exitReason = takeProfit ? "take-profit" : "stop-loss";
+      saveJSON(LEDGER_FILE, ledger);
+      alertFounder(`💰 EXIT ${rec.symbol}: ${(pnl * 100).toFixed(0)}% (${takeProfit ? "take-profit" : "stop-loss"}) — fuel recycled\nhttps://pump.fun/coin/${rec.mint}`);
+    } else {
+      alertFounder(`⚠️ EXIT FAILED for ${rec.symbol} (${(pnl * 100).toFixed(0)}%) — sell script error`);
+    }
   }
 }
 
@@ -221,6 +281,10 @@ async function scanOnce(dryRun: boolean) {
   const seen = loadJSON<string[]>(SEEN_FILE, []);
   let hourUsed = ledger.filter((c) => now - c.ts < 3600_000 && ["posted", "bought"].includes(c.status)).length;
   let dayUsed = ledger.filter((c) => now - c.ts < 86400_000 && ["posted", "bought"].includes(c.status)).length;
+
+  // SCALP-EXIT BRAIN first: bank aged winners / cut aged losers, freeing fuel
+  // before we hunt new calls (only when not in dry-run).
+  if (!dryRun) await exitCheck(ledger);
 
   // fetch both tiers (liquid gated behind env flag until graduated-buy proven)
   const LIQUID_ENABLED = process.env.GMGN_LIQUID === "1";
