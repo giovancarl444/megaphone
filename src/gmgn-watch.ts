@@ -89,6 +89,18 @@ async function browserSell(mint: string): Promise<boolean> {
   }
 }
 
+/** On-chain token balance for the founder wallet (RPC ground truth). */
+function tokenBalance(mint: string): number | null {
+  try {
+    const out = execSync(
+      `node src/token-balance.mjs ${mint}`,
+      { encoding: "utf8", timeout: 25000, windowsHide: true, cwd: process.cwd() },
+    );
+    const n = parseFloat(out.trim());
+    return isFinite(n) ? n : null;
+  } catch { return null; }
+}
+
 /** Live USD market cap via pump.fun public API (source of truth for exits). */
 function liveMcUsd(mint: string): number | null {
   try {
@@ -284,8 +296,8 @@ async function scanOnce(dryRun: boolean) {
   const now = Date.now();
   const ledger = loadJSON<CallRecord[]>(LEDGER_FILE, []);
   const seen = loadJSON<string[]>(SEEN_FILE, []);
-  let hourUsed = ledger.filter((c) => now - c.ts < 3600_000 && ["posted", "bought"].includes(c.status)).length;
-  let dayUsed = ledger.filter((c) => now - c.ts < 86400_000 && ["posted", "bought"].includes(c.status)).length;
+  let hourUsed = ledger.filter((c) => now - c.ts < 3600_000 && ["posted", "bought", "attempted"].includes(c.status)).length;
+  let dayUsed = ledger.filter((c) => now - c.ts < 86400_000 && ["posted", "bought", "attempted"].includes(c.status)).length;
 
   // SCALP-EXIT BRAIN first: bank aged winners / cut aged losers, freeing fuel
   // before we hunt new calls (only when not in dry-run).
@@ -351,12 +363,17 @@ async function scanOnce(dryRun: boolean) {
 
     console.log(`[gmgn] 💰 buy $1.2 as drew_patel (browser rail)...`);
     const bought = await browserBuy(mint);
-    if (!bought) {
-      rec.status = "failed"; rec.detail = "buy failed"; saveJSON(LEDGER_FILE, ledger);
-      alertFounder(`⚠️ ${tier.toUpperCase()} buy FAILED for ${rec.symbol} (${mint.slice(0, 8)}…) — ${thesis}`);
+    // TRUTH: only a real on-chain position counts as bought (auto-buy.mjs
+    // historically false-DONEs). Verify token balance via RPC before posting.
+    const heldAmt = await tokenBalance(mint);
+    if (!bought || heldAmt == null || heldAmt <= 0) {
+      rec.status = "attempted"; rec.detail = bought ? "buy false-positive (no on-chain position)" : "buy failed";
+      saveJSON(LEDGER_FILE, ledger);
+      hourUsed++; dayUsed++; // failed attempts STILL consume cap slots
+      alertFounder(`⚠️ ${tier.toUpperCase()} buy FAILED/UNVERIFIED for ${rec.symbol} (${mint.slice(0, 8)}…) — ${thesis}`);
       continue;
     }
-    rec.status = "bought"; saveJSON(LEDGER_FILE, ledger);
+    rec.status = "bought"; rec.detail = `held ${heldAmt.toFixed(0)}`; saveJSON(LEDGER_FILE, ledger);
     hourUsed++; dayUsed++;
     // record pump.fun usd_market_cap at buy time — the same-source exit baseline
     const buyMc = liveMcUsd(mint);
@@ -369,7 +386,10 @@ async function scanOnce(dryRun: boolean) {
       console.log(`[gmgn] 🎉 CALLOUT POSTED: ${rec.symbol}`);
       alertFounder(`🎉 AUTO-CALLOUT [${tier.toUpperCase()}]: ${rec.symbol} — "${thesis}"\nhttps://pump.fun/coin/${mint}\n(score ${score}, mc $${rec.mc.toLocaleString()}, ${rec.ageMin}m old)`);
     } else {
-      rec.status = "failed"; rec.detail = "post failed"; saveJSON(LEDGER_FILE, ledger);
+      // KEEP "bought" status — a bought position still counts toward caps.
+      // Flipping to "failed" here was THE runaway bug: caps recompute from
+      // ledger each scan, failed posts vanished from the count, engine looped.
+      rec.status = "bought"; rec.detail = "post failed (position held)"; saveJSON(LEDGER_FILE, ledger);
       alertFounder(`💰 Bought ${rec.symbol} (${tier}) but post failed — manual? https://pump.fun/coin/${mint}`);
     }
   }
