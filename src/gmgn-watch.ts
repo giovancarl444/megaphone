@@ -31,6 +31,7 @@ const MAX_PER_DAY = Number(process.env.GMGN_MAX_DAY || 6);
 interface CallRecord {
   mint: string; symbol: string; mc: number; ageMin: number; score: number;
   thesis: string; tier: "micro" | "liquid"; status: string; ts: number; detail?: string;
+  mcUsd?: number; // pump.fun usd_market_cap at buy time — the SAME-SOURCE exit baseline
   exitAt?: number; exitPnl?: number; exitReason?: string;
 }
 
@@ -108,7 +109,10 @@ function liveMcUsd(mint: string): number | null {
  *   - age < 6h:  never touch (callout is gathering views)
  *   - age >= 6h && pnl >= +50%: SELL (take profit, recycle fuel)
  *   - age >= 24h && pnl <= -40%: SELL (cut, recycle)
- *   Called coins only; every sell frees capital for the next callout. */
+ *  PnL is computed SAME-SOURCE: pump.fun usd_market_cap at buy (rec.mcUsd)
+ *  vs live usd_market_cap. GMGN's market_cap field is NOT comparable to
+ *  pump.fun's usd_market_cap (founder screenshot proved a 2x discrepancy),
+ *  so entries without mcUsd are never auto-sold. */
 async function exitCheck(ledger: CallRecord[]): Promise<void> {
   const now = Date.now();
   for (const rec of ledger) {
@@ -116,13 +120,14 @@ async function exitCheck(ledger: CallRecord[]): Promise<void> {
     if (rec.exitAt) continue; // already exited
     const ageH = (now - rec.ts) / 3600_000;
     if (ageH < 6) continue; // protected window — callout lives
+    if (!rec.mcUsd || rec.mcUsd <= 0) continue; // no same-source entry -> never auto-sell
     const cur = liveMcUsd(rec.mint);
-    if (cur == null || cur <= 0 || rec.mc <= 0) continue;
-    const pnl = cur / rec.mc - 1;
+    if (cur == null || cur <= 0) continue;
+    const pnl = cur / rec.mcUsd - 1;
     const takeProfit = pnl >= 0.5;
     const stopLoss = ageH >= 24 && pnl <= -0.4;
     if (!takeProfit && !stopLoss) continue;
-    console.log(`[gmgn] 🎯 EXIT ${rec.symbol}: pnl ${(pnl * 100).toFixed(0)}% (${cur.toLocaleString()} vs entry ${rec.mc.toLocaleString()}, ${ageH.toFixed(1)}h) — selling`);
+    console.log(`[gmgn] 🎯 EXIT ${rec.symbol}: pnl ${(pnl * 100).toFixed(0)}% (${cur.toLocaleString()} vs entry ${rec.mcUsd.toLocaleString()}, ${ageH.toFixed(1)}h) — selling`);
     const sold = await browserSell(rec.mint);
     if (sold) {
       rec.status = "sold"; rec.exitAt = now; rec.exitPnl = pnl; rec.exitReason = takeProfit ? "take-profit" : "stop-loss";
@@ -353,6 +358,9 @@ async function scanOnce(dryRun: boolean) {
     }
     rec.status = "bought"; saveJSON(LEDGER_FILE, ledger);
     hourUsed++; dayUsed++;
+    // record pump.fun usd_market_cap at buy time — the same-source exit baseline
+    const buyMc = liveMcUsd(mint);
+    if (buyMc != null && buyMc > 0) { rec.mcUsd = buyMc; saveJSON(LEDGER_FILE, ledger); }
 
     console.log(`[gmgn] 📢 posting "${thesis}"`);
     const post = await browserPost(mint, thesis);
