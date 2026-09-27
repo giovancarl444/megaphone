@@ -12,3 +12,10 @@ node_modules/
 # megaphone runtime
 .megaphone/
 .megaphone/.env
+
+# runtime state (added 2026-09-27)
+.dev1/
+.copy1/copy-seen.json
+.keepalive_report.txt
+__pycache__/
+.exitprobe.log
